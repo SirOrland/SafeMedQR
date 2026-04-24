@@ -8,7 +8,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const port = 4000;
+const port = Number(process.env.PORT ?? 4000);
 const host = "0.0.0.0";
 
 const makeId = (prefix: string) =>
