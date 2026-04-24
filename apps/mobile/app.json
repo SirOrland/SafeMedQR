@@ -4,7 +4,15 @@
     "slug": "safemedsqr",
     "version": "1.0.0",
     "orientation": "portrait",
+    "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
+    "android": {
+      "package": "com.siranne.safemedsqr",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#1d4ed8"
+      }
+    },
     "assetBundlePatterns": [
       "**/*"
     ],
@@ -20,9 +28,6 @@
           "color": "#1d4ed8"
         }
       ]
-    ],
-    "android": {
-      "package": "com.siranne.safemedsqr"
-    }
+    ]
   }
 }
