@@ -1,0 +1,17 @@
+{
+  "expo": {
+    "name": "SafeMedsQR",
+    "slug": "safemedsqr",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "5a3f5e2e-bbaa-4502-b4cb-fe71c576d5ac"
+      }
+    }
+  }
+}

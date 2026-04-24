@@ -1,0 +1,24 @@
+{
+  "name": "safemedsqr",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/api",
+    "apps/web",
+    "apps/mobile"
+  ],
+  "scripts": {
+    "dev:api": "npm --workspace apps/api run dev",
+    "dev:web": "npm --workspace apps/web run dev",
+    "dev:mobile": "npm --workspace apps/mobile run start",
+    "dev:mobile:tunnel": "npm --workspace apps/mobile run tunnel",
+    "build:api": "npm --workspace apps/api run build",
+    "build:web": "npm --workspace apps/web run build"
+  },
+  "overrides": {
+    "expo-camera": "~17.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "~19.1.10"
+  }
+}

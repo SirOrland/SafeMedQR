@@ -1,0 +1,5 @@
+- [ ] Update API/shared types for patient QR and medication-patient linkage model
+- [ ] Update backend routes in apps/api/src/index.ts
+- [ ] Update DB schema in apps/api/schema.sql
+- [ ] Update web/mobile types
+- [ ] Run TypeScript build/check
