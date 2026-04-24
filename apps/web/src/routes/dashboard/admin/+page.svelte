@@ -24,7 +24,7 @@
   let fromDate = "";
   let toDate = "";
 
-  let userForm = { id: "", name: "", role: "nurse" as Role, password: "" };
+  let userForm = { name: "", role: "nurse" as Role, password: "" };
   let nextMrn = "";
   let patientForm = {
     name: "", dob: "", ward: "", bed: "",
@@ -33,8 +33,28 @@
     patientStatus: "active" as "active" | "discharged" | "transferred",
     attendingPhysicianId: "", admissionDate: "",
   };
-  let medForm = { code: "", name: "", dose: "", route: "" };
-  let orderForm = { patientId: "", medicationId: "", prescribedDose: "", prescribedRoute: "", scheduledTime: "", prescriptionId: "", active: true };
+  let medForm = { name: "", dose: "", route: "" };
+  const todayIso = () => new Date().toISOString().slice(0, 10);
+  let orderForm = { patientId: "", medicationId: "", prescribedDose: "", prescribedRoute: "", scheduledDate: todayIso(), scheduledTime: "08:00", prescriptionId: "", active: true };
+  let orderDatePickerOpen = false;
+  let orderTimePickerOpen = false;
+  let orderPickerHour = 8;
+  let orderPickerMinute = 0;
+
+  function fmtDateLabel(d: string) {
+    const today    = todayIso();
+    const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+    if (d === today)    return "Today";
+    if (d === tomorrow) return "Tomorrow";
+    return new Date(d + "T00:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+  }
+  function fmtScheduled(st: string) {
+    if (st.length > 5) {
+      const [d, t] = st.split("T");
+      return new Date(d + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" }) + " · " + t;
+    }
+    return st;
+  }
 
   let qrOpen = false; let qrTitle = ""; let qrUrl = ""; let qrSub = "";
   let pwOpen = false; let pwUserId = ""; let pwUserName = ""; let pwValue = ""; let pwError = ""; let pwLoading = false;
@@ -76,15 +96,19 @@
     finally { pwLoading = false; }
   }
 
-  async function addUser() { await createUser(userForm); userForm = { id: "", name: "", role: "nurse", password: "" }; await loadAll(); }
+  async function addUser() { await createUser(userForm); userForm = { name: "", role: "nurse", password: "" }; await loadAll(); }
   async function toggleActive(u: User) { await setUserActive(u.id, !u.active); await loadAll(); }
   async function addPatient() {
     await createPatient(patientForm);
     patientForm = { name: "", dob: "", ward: "", bed: "", allergyStatus: "none", allergies: "", patientStatus: "active", attendingPhysicianId: "", admissionDate: "" };
     await loadAll();
   }
-  async function addMed() { await createMedication(medForm); medForm = { code: "", name: "", dose: "", route: "" }; await loadAll(); }
-  async function addOrder() { await createOrder(orderForm); orderForm = { patientId: "", medicationId: "", prescribedDose: "", prescribedRoute: "", scheduledTime: "", prescriptionId: "", active: true }; await loadAll(); }
+  async function addMed() { await createMedication(medForm); medForm = { name: "", dose: "", route: "" }; await loadAll(); }
+  async function addOrder() {
+    await createOrder({ ...orderForm, scheduledTime: `${orderForm.scheduledDate}T${orderForm.scheduledTime}` });
+    orderForm = { patientId: "", medicationId: "", prescribedDose: "", prescribedRoute: "", scheduledDate: todayIso(), scheduledTime: "08:00", prescriptionId: "", active: true };
+    await loadAll();
+  }
   async function saveThreshold(t: AlertThreshold) { await updateThreshold(t.id, editThresholds[t.id]); await loadAll(); }
 
   function signOut() { clearSession(); goto("/"); }
@@ -101,6 +125,7 @@
 </script>
 
 <svelte:head><title>Admin Dashboard — SafeMedsQR</title></svelte:head>
+<svelte:window on:click={() => { orderDatePickerOpen = false; orderTimePickerOpen = false; }} />
 
 <!-- Password modal -->
 {#if pwOpen}
@@ -187,14 +212,13 @@
             <div><h2>User Accounts</h2><p>Create and manage staff access. Only active accounts can log in.</p></div>
           </div>
           <div class="form-grid">
-            <label class="field"><span>Staff ID</span><input placeholder="e.g. n-102" bind:value={userForm.id}/></label>
             <label class="field"><span>Full Name</span><input placeholder="Full name" bind:value={userForm.name}/></label>
             <label class="field"><span>Role</span>
               <select bind:value={userForm.role}>
                 <option value="admin">Admin</option>
                 <option value="doctor">Doctor</option>
                 <option value="pharmacist">Pharmacist</option>
-                <option value="supervisor">Supervisor</option>
+                <option value="chief_nurse">Chief Nurse</option>
                 <option value="nurse">Nurse</option>
               </select>
             </label>
@@ -292,7 +316,6 @@
         <div class="panel">
           <div class="panel-head"><div><h2>Medications</h2><p>Maintain medication master data used during scan verification.</p></div></div>
           <div class="form-grid">
-            <label class="field"><span>Code</span><input placeholder="Medication code" bind:value={medForm.code}/></label>
             <label class="field"><span>Name</span><input placeholder="Medication name" bind:value={medForm.name}/></label>
             <label class="field"><span>Dose</span><input placeholder="e.g. 500mg" bind:value={medForm.dose}/></label>
             <label class="field"><span>Route</span><input placeholder="PO, IV, IM…" bind:value={medForm.route}/></label>
@@ -329,7 +352,10 @@
             </label>
             <label class="field">
               <span>Medication ID</span>
-              <select bind:value={orderForm.medicationId}>
+              <select bind:value={orderForm.medicationId} on:change={() => {
+                const med = medications.find(m => m.id === orderForm.medicationId);
+                if (med) { orderForm.prescribedDose = med.dose; orderForm.prescribedRoute = med.route; }
+              }}>
                 <option value="">— Select Medication —</option>
                 {#each medications as m}
                   <option value={m.id}>{m.name} — {m.dose} ({m.id})</option>
@@ -338,7 +364,80 @@
             </label>
             <label class="field"><span>Dose</span><input placeholder="Prescribed dose" bind:value={orderForm.prescribedDose}/></label>
             <label class="field"><span>Route</span><input placeholder="Route" bind:value={orderForm.prescribedRoute}/></label>
-            <label class="field"><span>Scheduled Time</span><input type="time" bind:value={orderForm.scheduledTime}/></label>
+            <!-- Date picker -->
+            <div class="field dt-field">
+              <span>Date</span>
+              <div class="dt-wrap">
+                <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
+                <button class="dt-pick-btn" on:click|stopPropagation={() => { orderDatePickerOpen = !orderDatePickerOpen; orderTimePickerOpen = false; }}>
+                  📅 {fmtDateLabel(orderForm.scheduledDate)}
+                </button>
+                {#if orderDatePickerOpen}
+                  <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
+                  <div class="dt-panel" on:click|stopPropagation>
+                    <div class="dt-quick-row">
+                      {#each [
+                        { label: "Today",    val: todayIso() },
+                        { label: "Tomorrow", val: new Date(Date.now() + 86400000).toISOString().slice(0, 10) },
+                        { label: "+2 Days",  val: new Date(Date.now() + 172800000).toISOString().slice(0, 10) },
+                      ] as q}
+                        <button class="dt-quick-btn" class:dt-quick-sel={orderForm.scheduledDate === q.val}
+                          on:click={() => { orderForm.scheduledDate = q.val; }}>
+                          {q.label}
+                        </button>
+                      {/each}
+                    </div>
+                    <div class="dt-nav-row">
+                      <button class="dt-nav-btn" on:click={() => { const d = new Date(orderForm.scheduledDate + "T00:00:00"); d.setDate(d.getDate() - 1); orderForm.scheduledDate = d.toISOString().slice(0, 10); }}>‹</button>
+                      <div class="dt-nav-center">
+                        <span class="dt-nav-date">{new Date(orderForm.scheduledDate + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}</span>
+                        <span class="dt-nav-year">{new Date(orderForm.scheduledDate + "T00:00:00").getFullYear()}</span>
+                      </div>
+                      <button class="dt-nav-btn" on:click={() => { const d = new Date(orderForm.scheduledDate + "T00:00:00"); d.setDate(d.getDate() + 1); orderForm.scheduledDate = d.toISOString().slice(0, 10); }}>›</button>
+                    </div>
+                  </div>
+                {/if}
+              </div>
+            </div>
+
+            <!-- Time picker -->
+            <div class="field dt-field">
+              <span>Time</span>
+              <div class="dt-wrap">
+                <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
+                <button class="dt-pick-btn" on:click|stopPropagation={() => {
+                  [orderPickerHour, orderPickerMinute] = orderForm.scheduledTime.split(":").map(Number);
+                  orderTimePickerOpen = !orderTimePickerOpen;
+                  orderDatePickerOpen = false;
+                }}>
+                  🕐 {orderForm.scheduledTime}
+                </button>
+                {#if orderTimePickerOpen}
+                  <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
+                  <div class="dt-panel tp-panel" on:click|stopPropagation>
+                    <div class="tp-body">
+                      <div class="tp-col">
+                        <span class="tp-col-label">Hour</span>
+                        <button class="tp-arrow" on:click={() => orderPickerHour = (orderPickerHour + 1) % 24}>▲</button>
+                        <span class="tp-display">{String(orderPickerHour).padStart(2, "0")}</span>
+                        <button class="tp-arrow" on:click={() => orderPickerHour = (orderPickerHour + 23) % 24}>▼</button>
+                      </div>
+                      <span class="tp-sep">:</span>
+                      <div class="tp-col">
+                        <span class="tp-col-label">Min</span>
+                        <button class="tp-arrow" on:click={() => orderPickerMinute = (orderPickerMinute + 5) % 60}>▲</button>
+                        <span class="tp-display">{String(orderPickerMinute).padStart(2, "0")}</span>
+                        <button class="tp-arrow" on:click={() => orderPickerMinute = (orderPickerMinute + 55) % 60}>▼</button>
+                      </div>
+                    </div>
+                    <button class="tp-confirm-btn" on:click={() => {
+                      orderForm.scheduledTime = `${String(orderPickerHour).padStart(2, "0")}:${String(orderPickerMinute).padStart(2, "0")}`;
+                      orderTimePickerOpen = false;
+                    }}>Confirm Time</button>
+                  </div>
+                {/if}
+              </div>
+            </div>
             <label class="field"><span>Rx ID</span><input placeholder="Prescription ID" bind:value={orderForm.prescriptionId}/></label>
             <button class="btn btn-primary align-end" on:click={addOrder}>Add Order</button>
           </div>
@@ -349,7 +448,7 @@
                 {#each orders as o}
                   <tr>
                     <td class="mono">{o.id}</td><td>{o.patientId}</td><td>{o.medicationId}</td>
-                    <td>{o.prescribedDose}</td><td>{o.prescribedRoute}</td><td>{o.scheduledTime}</td>
+                    <td>{o.prescribedDose}</td><td>{o.prescribedRoute}</td><td class="mono">{fmtScheduled(o.scheduledTime)}</td>
                     <td><span class="order-status {o.status}">{o.status}</span></td>
                     <td><button class="btn btn-sm btn-danger" on:click={() => deleteOrder(o.id).then(loadAll)}>Delete</button></td>
                   </tr>
@@ -391,7 +490,7 @@
       <!-- ── ALERT CONFIG ── -->
       {:else if activeTab === "alerts"}
         <div class="panel">
-          <div class="panel-head"><div><h2>Alert Thresholds</h2><p>Configure when escalation alerts are triggered for the supervisor dashboard.</p></div></div>
+          <div class="panel-head"><div><h2>Alert Thresholds</h2><p>Configure when escalation alerts are triggered for the chief nurse dashboard.</p></div></div>
           <div class="thresholds-grid">
             {#each thresholds as t}
               <div class="threshold-card">
@@ -535,7 +634,7 @@
   .role-badge.role-admin      { background: #eff6ff; color: #1d4ed8; border-color: #bfdbfe; }
   .role-badge.role-doctor     { background: #f0fdf4; color: #15803d; border-color: #bbf7d0; }
   .role-badge.role-pharmacist { background: #fdf4ff; color: #7e22ce; border-color: #e9d5ff; }
-  .role-badge.role-supervisor { background: #fff7ed; color: #c2410c; border-color: #fed7aa; }
+  .role-badge.role-chief_nurse { background: #fff7ed; color: #c2410c; border-color: #fed7aa; }
   .role-badge.role-nurse      { background: #f0f9ff; color: #0369a1; border-color: #bae6fd; }
 
   .status-badge { font-size: 11px; font-weight: 700; border-radius: 6px; padding: 3px 8px; border: 1px solid; }
@@ -589,4 +688,46 @@
   .qr-box { display: flex; justify-content: center; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; }
   .qr-box img { width: 220px; height: 220px; border-radius: 8px; }
   .inline-error { font-size: 13px; color: #dc2626; font-weight: 600; }
+
+  /* ── Date / Time pickers ── */
+  .dt-field { position: relative; }
+  .dt-wrap  { position: relative; }
+
+  .dt-pick-btn {
+    width: 100%; text-align: left; display: flex; align-items: center; gap: 8px;
+    border: 1.5px solid #e2e8f0; border-radius: 8px; padding: 9px 12px;
+    font-size: 14px; font-weight: 600; color: #0f172a; background: #fff;
+    cursor: pointer; transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  .dt-pick-btn:hover { border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,0.1); }
+
+  .dt-panel {
+    position: absolute; top: calc(100% + 6px); left: 0; z-index: 100;
+    background: #fff; border: 1px solid #e2e8f0; border-radius: 14px;
+    box-shadow: 0 8px 32px rgba(15,23,42,0.14); min-width: 280px;
+    padding: 14px; display: flex; flex-direction: column; gap: 10px;
+  }
+
+  .dt-quick-row  { display: flex; gap: 6px; }
+  .dt-quick-btn  { flex: 1; border: 1.5px solid #e2e8f0; border-radius: 8px; padding: 7px 4px; font-size: 12px; font-weight: 700; color: #475569; background: #f8fafc; cursor: pointer; transition: all 0.12s; }
+  .dt-quick-btn:hover { border-color: #3b82f6; color: #1d4ed8; background: #eff6ff; }
+  .dt-quick-sel  { border-color: #3b82f6 !important; color: #1d4ed8 !important; background: #eff6ff !important; }
+
+  .dt-nav-row    { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .dt-nav-btn    { width: 32px; height: 32px; border: 1.5px solid #e2e8f0; border-radius: 8px; background: #f8fafc; font-size: 18px; font-weight: 600; color: #1d4ed8; cursor: pointer; display: grid; place-items: center; flex-shrink: 0; transition: background 0.12s; }
+  .dt-nav-btn:hover { background: #eff6ff; border-color: #3b82f6; }
+  .dt-nav-center { flex: 1; text-align: center; }
+  .dt-nav-date   { display: block; font-size: 13px; font-weight: 700; color: #0f172a; }
+  .dt-nav-year   { display: block; font-size: 11px; color: #94a3b8; margin-top: 2px; }
+
+  .tp-panel  { min-width: 220px; }
+  .tp-body   { display: flex; align-items: center; justify-content: center; gap: 4px; padding: 4px 0 8px; }
+  .tp-col    { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .tp-col-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: #94a3b8; }
+  .tp-arrow  { width: 36px; height: 36px; border: 1.5px solid #e2e8f0; border-radius: 8px; background: #eff6ff; font-size: 14px; color: #1d4ed8; cursor: pointer; display: grid; place-items: center; transition: background 0.1s; }
+  .tp-arrow:hover { background: #dbeafe; }
+  .tp-display { font-size: 36px; font-weight: 800; color: #0f172a; min-width: 56px; text-align: center; line-height: 1.1; }
+  .tp-sep     { font-size: 32px; font-weight: 300; color: #94a3b8; align-self: center; padding: 0 2px; margin-top: 18px; }
+  .tp-confirm-btn { width: 100%; padding: 9px; border: none; border-radius: 8px; background: #1d4ed8; color: #fff; font-size: 13px; font-weight: 700; cursor: pointer; transition: filter 0.12s; }
+  .tp-confirm-btn:hover { filter: brightness(1.08); }
 </style>

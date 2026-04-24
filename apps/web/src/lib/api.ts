@@ -1,6 +1,8 @@
 import type { AlertThreshold, Medication, MedicationOrder, OrderStatus, Patient, Role, ScanLog, User } from "./types";
 
-const API_BASE = "http://localhost:4000";
+const API_BASE =
+  (import.meta.env.PUBLIC_API_BASE as string | undefined)?.replace(/\/$/, "") ??
+  "http://localhost:4000";
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(`${API_BASE}${path}`, init);
@@ -26,7 +28,7 @@ export async function login(id: string, password: string, role?: Role) {
 // ── Users ────────────────────────────────────────────────────────────────────
 
 export const getUsers = () => req<User[]>("/users");
-export const createUser = (body: { id: string; name: string; role: Role; password: string }) =>
+export const createUser = (body: { name: string; role: Role; password: string }) =>
   req<User>("/users", json("POST", body));
 export const setUserActive = (id: string, active: boolean) =>
   req<{ id: string; active: boolean }>(`/users/${id}/active`, json("PATCH", { active }));
@@ -46,7 +48,7 @@ export const deletePatient = (id: string) => req<Patient>(`/patients/${id}`, { m
 // ── Medications ───────────────────────────────────────────────────────────────
 
 export const getMedications = () => req<Medication[]>("/medications");
-export const createMedication = (body: Omit<Medication, "id">) =>
+export const createMedication = (body: Omit<Medication, "id" | "code">) =>
   req<Medication>("/medications", json("POST", body));
 export const updateMedication = (id: string, body: Partial<Medication>) =>
   req<Medication>(`/medications/${id}`, json("PUT", body));

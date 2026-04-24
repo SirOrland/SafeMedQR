@@ -59,7 +59,7 @@
           <span class="pill admin">Admin</span>
           <span class="pill doctor">Doctor</span>
           <span class="pill pharma">Pharmacist</span>
-          <span class="pill super">Supervisor</span>
+          <span class="pill super">Chief Nurse</span>
         </div>
       </div>
     </div>

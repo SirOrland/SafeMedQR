@@ -16,7 +16,7 @@
 
   onMount(async () => {
     const s = $session;
-    if (!s || s.user.role !== "supervisor") { await goto("/"); return; }
+    if (!s || s.user.role !== "chief_nurse") { await goto("/"); return; }
     userName = s.user.name;
     await loadAll();
   });
@@ -62,7 +62,7 @@
   };
 </script>
 
-<svelte:head><title>Supervisor Dashboard — SafeMedsQR</title></svelte:head>
+<svelte:head><title>Chief Nurse Dashboard — SafeMedsQR</title></svelte:head>
 
 <div class="shell">
   <aside class="sidebar">
@@ -70,7 +70,7 @@
       <div class="brand-logo">✚</div>
       <div>
         <p class="brand-app">SafeMedsQR</p>
-        <p class="brand-role">Supervisor</p>
+        <p class="brand-role">Chief Nurse</p>
       </div>
     </div>
     <nav>
@@ -85,7 +85,7 @@
     </nav>
     <div class="sidebar-footer">
       <div class="user-row">
-        <div class="user-avatar">{userName[0] ?? "S"}</div>
+        <div class="user-avatar">{userName[0] ?? "C"}</div>
         <span class="user-name">{userName}</span>
       </div>
       <button class="btn-signout" on:click={() => { clearSession(); goto("/"); }}>Sign out</button>
@@ -95,7 +95,7 @@
   <div class="main-wrap">
     <header class="page-header">
       <div>
-        <p class="page-eyebrow">Supervisor Dashboard</p>
+        <p class="page-eyebrow">Chief Nurse Dashboard</p>
         <h1 class="page-title">{TABS[activeTab]}</h1>
       </div>
       <div class="header-stats">

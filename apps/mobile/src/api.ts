@@ -67,6 +67,18 @@ export const getPatients = () => req<Patient[]>("/patients");
 export const getOrders = () => req<MedicationOrder[]>("/orders");
 export const getMedications = () => req<Medication[]>("/medications");
 
+export async function createOrder(payload: {
+  patientId: string;
+  medicationId: string;
+  prescribedDose: string;
+  prescribedRoute: string;
+  scheduledTime: string;
+  prescriptionId: string;
+  active: boolean;
+}) {
+  return req<MedicationOrder>("/orders", jsonBody("POST", payload));
+}
+
 export async function createScanLog(payload: {
   nurseId: string;
   patientId: string;

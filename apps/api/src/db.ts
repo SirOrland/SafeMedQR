@@ -1,23 +1,17 @@
 import "dotenv/config";
-import mysql from "mysql2/promise";
+import { neonConfig, Pool } from "@neondatabase/serverless";
 
-const pool = mysql.createPool({
-  host:     process.env.DB_HOST     ?? "localhost",
-  port:     Number(process.env.DB_PORT ?? 3306),
-  user:     process.env.DB_USER     ?? "root",
-  password: process.env.DB_PASSWORD ?? "",
-  database: process.env.DB_NAME     ?? "safemedsqr",
-  waitForConnections: true,
-  connectionLimit:    10,
-  timezone: "Z"          // store / read all datetimes as UTC
-});
+if (!process.env.DATABASE_URL) {
+  throw new Error("DATABASE_URL environment variable is required");
+}
 
-// Prevent unhandled fatal errors from crashing the process when MySQL
-// is temporarily unreachable. Each route already catches query errors.
-pool.on("connection", (conn) => {
-  conn.on("error", (err) => {
-    console.error("[db] connection error:", (err as NodeJS.ErrnoException).code ?? err.message);
-  });
+// Node.js 21+ has a built-in WebSocket — no 'ws' package needed.
+neonConfig.webSocketConstructor = globalThis.WebSocket;
+
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+
+pool.on("error", (err: Error) => {
+  console.error("[db] pool error:", (err as NodeJS.ErrnoException).code ?? err.message);
 });
 
 export default pool;

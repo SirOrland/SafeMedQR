@@ -1,7 +1,7 @@
 import { browser } from "$app/environment";
 import { writable } from "svelte/store";
 
-export type Role = "admin" | "doctor" | "pharmacist" | "supervisor" | "nurse";
+export type Role = "admin" | "doctor" | "pharmacist" | "chief_nurse" | "nurse";
 
 export interface SessionUser {
   id: string;
@@ -43,6 +43,6 @@ export const ROLE_ROUTES: Record<Role, string> = {
   admin:       "/dashboard/admin",
   doctor:      "/dashboard/doctor",
   pharmacist:  "/dashboard/pharmacy",
-  supervisor:  "/dashboard/supervisor",
-  nurse:       "/dashboard/admin",
+  chief_nurse: "/dashboard/supervisor",
+  nurse:       "/dashboard/nurse",
 };

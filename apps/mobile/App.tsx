@@ -4,6 +4,7 @@ import {
   Alert,
   Dimensions,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   SafeAreaView,
   ScrollView,
@@ -20,6 +21,7 @@ const STATUSBAR_H = Platform.OS === "android" ? (RNStatusBar.currentHeight ?? 24
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as Notifications from "expo-notifications";
 import {
+  createOrder,
   createScanLog,
   getMedications,
   getMyLogs,
@@ -58,7 +60,8 @@ type Screen =
   | "verify"
   | "postEval"
   | "success"
-  | "logs";
+  | "logs"
+  | "createOrder";
 
 type RightStatus = "green" | "yellow" | "red";
 
@@ -127,13 +130,37 @@ function nowHHmm() {
 }
 
 function getMedAlertStatus(scheduledTime: string): MedAlertStatus {
-  const [h, m] = scheduledTime.split(":").map(Number);
-  const scheduled = new Date();
-  scheduled.setHours(h, m, 0, 0);
+  let scheduled: Date;
+  if (scheduledTime.length > 5) {
+    scheduled = new Date(scheduledTime.replace(" ", "T") + ":00");
+  } else {
+    const [h, m] = scheduledTime.split(":").map(Number);
+    scheduled = new Date();
+    scheduled.setHours(h, m, 0, 0);
+  }
   const diffMins = (scheduled.getTime() - Date.now()) / 60000;
   if (diffMins < 0)              return "overdue";
   if (diffMins <= DUE_SOON_MINS) return "due-soon";
   return "on-time";
+}
+
+function formatScheduledDisplay(scheduledTime: string) {
+  if (scheduledTime.length > 5) {
+    const [datePart, timePart] = scheduledTime.split("T");
+    const d = new Date(datePart + "T00:00:00");
+    const dateStr = d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    return `${dateStr} · ${timePart}`;
+  }
+  return scheduledTime;
+}
+
+function formatDateLabel(dateStr: string) {
+  const today    = new Date().toISOString().slice(0, 10);
+  const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+  if (dateStr === today)    return "Today";
+  if (dateStr === tomorrow) return "Tomorrow";
+  const d = new Date(dateStr + "T00:00:00");
+  return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
 }
 
 function alertColor(s: MedAlertStatus) {
@@ -237,6 +264,18 @@ export default function App() {
 
   const [adverseReaction, setAdverseReaction] = useState<boolean | null>(null);
   const [evalNotes, setEvalNotes]             = useState("");
+
+  const todayStr = () => new Date().toISOString().slice(0, 10);
+  const BLANK_ORDER = { patientId: "", medicationId: "", prescribedDose: "", prescribedRoute: "", scheduledDate: todayStr(), scheduledTime: "08:00", prescriptionId: "" };
+  const [orderForm, setOrderForm]           = useState(BLANK_ORDER);
+  const [orderFormError, setOrderFormError] = useState("");
+  const [orderFormLoading, setOrderFormLoading] = useState(false);
+  const [showPatientPicker, setShowPatientPicker] = useState(false);
+  const [showMedPicker, setShowMedPicker]         = useState(false);
+  const [showDatePicker, setShowDatePicker]       = useState(false);
+  const [showTimePicker, setShowTimePicker]       = useState(false);
+  const [pickerHour, setPickerHour]               = useState(8);
+  const [pickerMinute, setPickerMinute]           = useState(0);
 
   // ── Session timeout ─────────────────────────────────────────────────────────
 
@@ -397,6 +436,34 @@ export default function App() {
     setPasswordInput("");
     resetScanFlow();
     await clearAllLocalData();
+  }
+
+  // ── Create Order ────────────────────────────────────────────────────────────
+
+  async function handleCreateOrder() {
+    if (!orderForm.patientId || !orderForm.medicationId || !orderForm.prescribedDose) {
+      setOrderFormError("Please fill in all required fields."); return;
+    }
+    setOrderFormError(""); setOrderFormLoading(true);
+    try {
+      await createOrder({
+        patientId: orderForm.patientId,
+        medicationId: orderForm.medicationId,
+        prescribedDose: orderForm.prescribedDose,
+        prescribedRoute: orderForm.prescribedRoute,
+        scheduledTime: `${orderForm.scheduledDate}T${orderForm.scheduledTime}`,
+        prescriptionId: orderForm.prescriptionId,
+        active: true,
+      });
+      setOrderForm({ ...BLANK_ORDER, scheduledDate: todayStr() });
+      if (session) await loadReferenceData(session.nurseId);
+      Alert.alert("Order Created", "The medication order has been submitted successfully.");
+      setScreen("home");
+    } catch (e: unknown) {
+      setOrderFormError(e instanceof Error ? e.message : "Failed to create order.");
+    } finally {
+      setOrderFormLoading(false);
+    }
   }
 
   // ── Scan flow ───────────────────────────────────────────────────────────────
@@ -757,6 +824,21 @@ export default function App() {
 
           <TouchableOpacity
             style={[styles.actionCard, { marginTop: 10 }]}
+            onPress={() => { setOrderForm(BLANK_ORDER); setOrderFormError(""); setScreen("createOrder"); }}
+            activeOpacity={0.8}
+          >
+            <View style={[styles.actionIconCircle, { backgroundColor: "#f0f9ff" }]}>
+              <Text style={styles.actionIconText}>➕</Text>
+            </View>
+            <View style={styles.actionCardBody}>
+              <Text style={styles.actionCardTitle}>Create Medication Order</Text>
+              <Text style={styles.actionCardSub}>Add a new order for a patient</Text>
+            </View>
+            <Text style={styles.actionChevron}>›</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.actionCard, { marginTop: 10 }]}
             onPress={async () => { if (session) await loadReferenceData(session.nurseId); setScreen("logs"); }}
             activeOpacity={0.8}
           >
@@ -926,7 +1008,7 @@ export default function App() {
                       { label: "Medication ID",   value: order.medicationId },
                       { label: "Dose",            value: order.prescribedDose },
                       { label: "Route",           value: order.prescribedRoute },
-                      { label: "Scheduled Time",  value: order.scheduledTime },
+                      { label: "Scheduled Time",  value: formatScheduledDisplay(order.scheduledTime) },
                       { label: "Rx ID",           value: order.prescriptionId ?? "—" },
                     ].map((f) => (
                       <View key={f.label} style={styles.orderFieldRow}>
@@ -1185,6 +1267,349 @@ export default function App() {
             ))
           )}
         </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
+  // ── CREATE ORDER ─────────────────────────────────────────────────────────────
+  if (screen === "createOrder") {
+    const selectedPatient = patients.find((p) => p.id === orderForm.patientId);
+    const selectedMed     = meds.find((m) => m.id === orderForm.medicationId);
+
+    return (
+      <SafeAreaView style={styles.safe}>
+        <StatusBar style="dark" />
+        <ScreenHeader
+          title="Create Order"
+          left={<BackBtn onPress={() => setScreen("home")} label="Home" />}
+        />
+
+        {/* Date picker modal */}
+        <Modal visible={showDatePicker} animationType="slide" transparent>
+          <View style={styles.dpBackdrop}>
+            <View style={styles.dpModal}>
+              <View style={styles.dpHead}>
+                <Text style={styles.dpTitle}>Set Date</Text>
+                <TouchableOpacity onPress={() => setShowDatePicker(false)}>
+                  <Text style={styles.dpDone}>Done</Text>
+                </TouchableOpacity>
+              </View>
+              <View style={styles.dpQuickRow}>
+                {[
+                  { label: "Today",    val: new Date().toISOString().slice(0, 10) },
+                  { label: "Tomorrow", val: new Date(Date.now() + 86400000).toISOString().slice(0, 10) },
+                  { label: "+2 Days",  val: new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10) },
+                ].map(({ label, val }) => (
+                  <TouchableOpacity
+                    key={label}
+                    style={[styles.dpQuickBtn, orderForm.scheduledDate === val && styles.dpQuickBtnSel]}
+                    onPress={() => setOrderForm((f) => ({ ...f, scheduledDate: val }))}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={[styles.dpQuickText, orderForm.scheduledDate === val && styles.dpQuickTextSel]}>{label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              <View style={styles.dpNavRow}>
+                <TouchableOpacity
+                  style={styles.dpNavBtn}
+                  onPress={() => {
+                    const d = new Date(orderForm.scheduledDate + "T00:00:00");
+                    d.setDate(d.getDate() - 1);
+                    setOrderForm((f) => ({ ...f, scheduledDate: d.toISOString().slice(0, 10) }));
+                  }}
+                >
+                  <Text style={styles.dpNavBtnText}>‹</Text>
+                </TouchableOpacity>
+                <View>
+                  <Text style={styles.dpDateText}>
+                    {new Date(orderForm.scheduledDate + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
+                  </Text>
+                  <Text style={styles.dpDateSub}>
+                    {new Date(orderForm.scheduledDate + "T00:00:00").getFullYear()}
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  style={styles.dpNavBtn}
+                  onPress={() => {
+                    const d = new Date(orderForm.scheduledDate + "T00:00:00");
+                    d.setDate(d.getDate() + 1);
+                    setOrderForm((f) => ({ ...f, scheduledDate: d.toISOString().slice(0, 10) }));
+                  }}
+                >
+                  <Text style={styles.dpNavBtnText}>›</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
+
+        {/* Time picker modal */}
+        <Modal visible={showTimePicker} animationType="slide" transparent>
+          <View style={styles.tpBackdrop}>
+            <View style={styles.tpModal}>
+              <View style={styles.tpHead}>
+                <Text style={styles.tpTitle}>Set Time</Text>
+                <TouchableOpacity onPress={() => {
+                  const hh = String(pickerHour).padStart(2, "0");
+                  const mm = String(pickerMinute).padStart(2, "0");
+                  setOrderForm((f) => ({ ...f, scheduledTime: `${hh}:${mm}` }));
+                  setShowTimePicker(false);
+                }}>
+                  <Text style={styles.tpDone}>Done</Text>
+                </TouchableOpacity>
+              </View>
+              <View style={styles.tpBody}>
+                {/* Hour column */}
+                <View style={styles.tpCol}>
+                  <Text style={styles.tpColLabel}>Hour</Text>
+                  <TouchableOpacity style={styles.tpArrow} onPress={() => setPickerHour((h) => (h + 1) % 24)}>
+                    <Text style={styles.tpArrowText}>▲</Text>
+                  </TouchableOpacity>
+                  <Text style={styles.tpDisplay}>{String(pickerHour).padStart(2, "0")}</Text>
+                  <TouchableOpacity style={styles.tpArrow} onPress={() => setPickerHour((h) => (h + 23) % 24)}>
+                    <Text style={styles.tpArrowText}>▼</Text>
+                  </TouchableOpacity>
+                </View>
+                <Text style={styles.tpSep}>:</Text>
+                {/* Minute column */}
+                <View style={styles.tpCol}>
+                  <Text style={styles.tpColLabel}>Minute</Text>
+                  <TouchableOpacity style={styles.tpArrow} onPress={() => setPickerMinute((m) => (m + 5) % 60)}>
+                    <Text style={styles.tpArrowText}>▲</Text>
+                  </TouchableOpacity>
+                  <Text style={styles.tpDisplay}>{String(pickerMinute).padStart(2, "0")}</Text>
+                  <TouchableOpacity style={styles.tpArrow} onPress={() => setPickerMinute((m) => (m + 55) % 60)}>
+                    <Text style={styles.tpArrowText}>▼</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          </View>
+        </Modal>
+
+        {/* Patient picker modal */}
+        <Modal visible={showPatientPicker} animationType="slide" transparent>
+          <View style={styles.pickerModalBackdrop}>
+            <View style={styles.pickerModal}>
+              <View style={styles.pickerModalHead}>
+                <Text style={styles.pickerModalTitle}>Select Patient</Text>
+                <TouchableOpacity onPress={() => setShowPatientPicker(false)}>
+                  <Text style={styles.pickerModalClose}>Done</Text>
+                </TouchableOpacity>
+              </View>
+              <ScrollView>
+                {patients.map((p) => (
+                  <TouchableOpacity
+                    key={p.id}
+                    style={[styles.pickerRow, orderForm.patientId === p.id && styles.pickerRowSelected]}
+                    onPress={() => { setOrderForm((f) => ({ ...f, patientId: p.id })); setShowPatientPicker(false); }}
+                    activeOpacity={0.7}
+                  >
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.pickerRowName}>{p.name}</Text>
+                      <Text style={styles.pickerRowSub}>{p.mrn} · {p.ward}{p.bed ? ` / Bed ${p.bed}` : ""}</Text>
+                    </View>
+                    {orderForm.patientId === p.id && <Text style={styles.pickerCheck}>✓</Text>}
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          </View>
+        </Modal>
+
+        {/* Medication picker modal */}
+        <Modal visible={showMedPicker} animationType="slide" transparent>
+          <View style={styles.pickerModalBackdrop}>
+            <View style={styles.pickerModal}>
+              <View style={styles.pickerModalHead}>
+                <Text style={styles.pickerModalTitle}>Select Medication</Text>
+                <TouchableOpacity onPress={() => setShowMedPicker(false)}>
+                  <Text style={styles.pickerModalClose}>Done</Text>
+                </TouchableOpacity>
+              </View>
+              <ScrollView>
+                {meds.map((m) => (
+                  <TouchableOpacity
+                    key={m.id}
+                    style={[styles.pickerRow, orderForm.medicationId === m.id && styles.pickerRowSelected]}
+                    onPress={() => {
+                      setOrderForm((f) => ({ ...f, medicationId: m.id, prescribedDose: m.dose, prescribedRoute: m.route }));
+                      setShowMedPicker(false);
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.pickerRowName}>{m.name}</Text>
+                      <Text style={styles.pickerRowSub}>{m.dose} · {m.route} · {m.code}</Text>
+                    </View>
+                    {orderForm.medicationId === m.id && <Text style={styles.pickerCheck}>✓</Text>}
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          </View>
+        </Modal>
+
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"}>
+          <ScrollView contentContainerStyle={styles.padded} onTouchStart={resetTimeout} keyboardShouldPersistTaps="handled">
+            <Text style={styles.pageTitle}>New Medication Order</Text>
+            <Text style={styles.pageSub}>Fill in the order details and submit for pharmacy processing.</Text>
+
+            {/* Patient selector */}
+            <Text style={styles.sectionTitle}>Patient *</Text>
+            <TouchableOpacity
+              style={styles.selectorBtn}
+              onPress={() => setShowPatientPicker(true)}
+              activeOpacity={0.8}
+            >
+              {selectedPatient ? (
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.selectorBtnValue}>{selectedPatient.name}</Text>
+                  <Text style={styles.selectorBtnSub}>{selectedPatient.mrn} · {selectedPatient.ward}</Text>
+                </View>
+              ) : (
+                <Text style={styles.selectorBtnPlaceholder}>— Tap to select patient —</Text>
+              )}
+              <Text style={styles.selectorChevron}>›</Text>
+            </TouchableOpacity>
+
+            {/* Medication selector */}
+            <Text style={styles.sectionTitle}>Medication *</Text>
+            <TouchableOpacity
+              style={styles.selectorBtn}
+              onPress={() => setShowMedPicker(true)}
+              activeOpacity={0.8}
+            >
+              {selectedMed ? (
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.selectorBtnValue}>{selectedMed.name}</Text>
+                  <Text style={styles.selectorBtnSub}>{selectedMed.dose} · {selectedMed.route}</Text>
+                </View>
+              ) : (
+                <Text style={styles.selectorBtnPlaceholder}>— Tap to select medication —</Text>
+              )}
+              <Text style={styles.selectorChevron}>›</Text>
+            </TouchableOpacity>
+
+            {/* Prescribed dose */}
+            <Text style={styles.sectionTitle}>Prescribed Dose *</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="e.g. 500mg"
+              placeholderTextColor={C.textMuted}
+              value={orderForm.prescribedDose}
+              onChangeText={(v) => setOrderForm((f) => ({ ...f, prescribedDose: v }))}
+            />
+
+            {/* Route */}
+            <Text style={styles.sectionTitle}>Route</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="PO, IV, IM…"
+              placeholderTextColor={C.textMuted}
+              value={orderForm.prescribedRoute}
+              onChangeText={(v) => setOrderForm((f) => ({ ...f, prescribedRoute: v }))}
+            />
+
+            {/* Date + Time selectors */}
+            <Text style={styles.sectionTitle}>Schedule *</Text>
+            <View style={styles.dtRow}>
+              <TouchableOpacity
+                style={[styles.dtBtn, { flex: 1.3 }]}
+                onPress={() => setShowDatePicker(true)}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.dtBtnIcon}>📅</Text>
+                <View>
+                  <Text style={styles.dtBtnLabel}>Date</Text>
+                  <Text style={styles.dtBtnValue}>{formatDateLabel(orderForm.scheduledDate)}</Text>
+                </View>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.dtBtn, { flex: 1 }]}
+                onPress={() => {
+                  const [h, m] = orderForm.scheduledTime.split(":").map(Number);
+                  setPickerHour(h);
+                  setPickerMinute(m);
+                  setShowTimePicker(true);
+                }}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.dtBtnIcon}>🕐</Text>
+                <View>
+                  <Text style={styles.dtBtnLabel}>Time</Text>
+                  <Text style={styles.dtBtnValue}>{orderForm.scheduledTime}</Text>
+                </View>
+              </TouchableOpacity>
+            </View>
+
+            {/* Prescription ID */}
+            <Text style={styles.sectionTitle}>Prescription ID</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Rx identifier (optional)"
+              placeholderTextColor={C.textMuted}
+              value={orderForm.prescriptionId}
+              onChangeText={(v) => setOrderForm((f) => ({ ...f, prescriptionId: v }))}
+            />
+
+            {/* Preview card */}
+            {selectedPatient && selectedMed && (
+              <View style={styles.orderPreviewCard}>
+                <Text style={styles.orderPreviewLabel}>Order Preview</Text>
+                <View style={styles.orderPreviewRow}>
+                  <Text style={styles.orderPreviewKey}>Patient</Text>
+                  <Text style={styles.orderPreviewVal}>{selectedPatient.name}</Text>
+                </View>
+                <View style={styles.orderPreviewRow}>
+                  <Text style={styles.orderPreviewKey}>Medication</Text>
+                  <Text style={styles.orderPreviewVal}>{selectedMed.name}</Text>
+                </View>
+                {!!orderForm.prescribedDose && (
+                  <View style={styles.orderPreviewRow}>
+                    <Text style={styles.orderPreviewKey}>Dose</Text>
+                    <Text style={styles.orderPreviewVal}>{orderForm.prescribedDose} {orderForm.prescribedRoute}</Text>
+                  </View>
+                )}
+                {!!orderForm.scheduledTime && (
+                  <View style={styles.orderPreviewRow}>
+                    <Text style={styles.orderPreviewKey}>Scheduled</Text>
+                    <Text style={styles.orderPreviewVal}>{orderForm.scheduledTime}</Text>
+                  </View>
+                )}
+              </View>
+            )}
+
+            {!!orderFormError && (
+              <View style={styles.formErrorBox}>
+                <Text style={styles.formErrorText}>⚠  {orderFormError}</Text>
+              </View>
+            )}
+
+            <TouchableOpacity
+              style={[styles.btnPrimary, { marginTop: 20 }, orderFormLoading && styles.btnDisabled]}
+              onPress={handleCreateOrder}
+              disabled={orderFormLoading}
+              activeOpacity={0.85}
+            >
+              {orderFormLoading
+                ? <ActivityIndicator color="#fff" size="small" />
+                : <Text style={styles.btnPrimaryText}>Submit Order</Text>
+              }
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.btnSecondary, { marginTop: 10 }]}
+              onPress={() => setScreen("home")}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.btnSecondaryText}>Cancel</Text>
+            </TouchableOpacity>
+
+            <View style={{ height: 24 }} />
+          </ScrollView>
+        </KeyboardAvoidingView>
       </SafeAreaView>
     );
   }
@@ -1480,4 +1905,93 @@ const styles = StyleSheet.create({
   patientStatusDischarged:  { backgroundColor: "#f1f5f9", borderColor: "#cbd5e1" },
   patientStatusTransferred: { backgroundColor: "#fffbeb", borderColor: "#fde68a" },
   patientStatusText:        { fontSize: 11, fontWeight: "800", letterSpacing: 0.4, color: "#92400e" },
+
+  // ── Create Order ───────────────────────────────────────────────────────────
+  selectorBtn: {
+    flexDirection: "row", alignItems: "center",
+    borderWidth: 1.5, borderColor: C.border, borderRadius: 12,
+    backgroundColor: C.bg, paddingHorizontal: 14, paddingVertical: 13, marginBottom: 4,
+  },
+  selectorBtnValue:       { fontSize: 15, fontWeight: "700", color: C.text },
+  selectorBtnSub:         { fontSize: 12, color: C.textSub, marginTop: 2 },
+  selectorBtnPlaceholder: { flex: 1, fontSize: 15, color: C.textMuted },
+  selectorChevron:        { fontSize: 20, color: C.textMuted, marginLeft: 8 },
+
+  pickerModalBackdrop: { flex: 1, backgroundColor: "rgba(15,23,42,0.5)", justifyContent: "flex-end" },
+  pickerModal: {
+    backgroundColor: C.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    maxHeight: "70%", paddingBottom: 32,
+  },
+  pickerModalHead: {
+    flexDirection: "row", justifyContent: "space-between", alignItems: "center",
+    padding: 18, borderBottomWidth: 1, borderBottomColor: C.border,
+  },
+  pickerModalTitle: { fontSize: 17, fontWeight: "800", color: C.text },
+  pickerModalClose: { fontSize: 15, fontWeight: "700", color: C.primary },
+  pickerRow: {
+    flexDirection: "row", alignItems: "center",
+    paddingHorizontal: 18, paddingVertical: 14,
+    borderBottomWidth: 1, borderBottomColor: C.border,
+  },
+  pickerRowSelected: { backgroundColor: C.primaryLight },
+  pickerRowName:     { fontSize: 15, fontWeight: "700", color: C.text },
+  pickerRowSub:      { fontSize: 12, color: C.textSub, marginTop: 2 },
+  pickerCheck:       { fontSize: 18, color: C.primary, fontWeight: "800", marginLeft: 8 },
+
+  orderPreviewCard: {
+    backgroundColor: "#f0f9ff", borderRadius: 14, padding: 16,
+    borderWidth: 1, borderColor: "#bae6fd", marginTop: 16,
+  },
+  orderPreviewLabel: { fontSize: 11, fontWeight: "800", color: "#0369a1", textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 10 },
+  orderPreviewRow:   { flexDirection: "row", justifyContent: "space-between", paddingVertical: 5, borderBottomWidth: 1, borderBottomColor: "#e0f2fe" },
+  orderPreviewKey:   { fontSize: 13, fontWeight: "700", color: "#0369a1" },
+  orderPreviewVal:   { fontSize: 13, fontWeight: "600", color: "#0c4a6e", flexShrink: 1, textAlign: "right", marginLeft: 12 },
+
+  formErrorBox: {
+    backgroundColor: C.dangerLight, borderRadius: 10, padding: 12,
+    borderWidth: 1, borderColor: C.dangerBorder, marginTop: 12,
+  },
+  formErrorText: { fontSize: 13, fontWeight: "600", color: "#991b1b", lineHeight: 18 },
+
+  // ── Date / Time selectors ──────────────────────────────────────────────────
+  dtRow:      { flexDirection: "row", gap: 10, marginBottom: 4 },
+  dtBtn: {
+    flexDirection: "row", alignItems: "center", gap: 10,
+    borderWidth: 1.5, borderColor: C.border, borderRadius: 12,
+    backgroundColor: C.bg, paddingHorizontal: 14, paddingVertical: 13,
+  },
+  dtBtnIcon:  { fontSize: 20 },
+  dtBtnLabel: { fontSize: 10, fontWeight: "700", color: C.textMuted, textTransform: "uppercase", letterSpacing: 0.5 },
+  dtBtnValue: { fontSize: 15, fontWeight: "700", color: C.text, marginTop: 1 },
+
+  // ── Time picker modal ──────────────────────────────────────────────────────
+  tpBackdrop:  { flex: 1, backgroundColor: "rgba(15,23,42,0.5)", justifyContent: "flex-end" },
+  tpModal:     { backgroundColor: C.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingBottom: 36 },
+  tpHead:      { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 18, borderBottomWidth: 1, borderBottomColor: C.border },
+  tpTitle:     { fontSize: 17, fontWeight: "800", color: C.text },
+  tpDone:      { fontSize: 15, fontWeight: "700", color: C.primary },
+  tpBody:      { flexDirection: "row", justifyContent: "center", alignItems: "center", paddingVertical: 28, gap: 0 },
+  tpCol:       { alignItems: "center", width: 110 },
+  tpColLabel:  { fontSize: 11, fontWeight: "700", color: C.textMuted, textTransform: "uppercase", letterSpacing: 0.6, marginBottom: 12 },
+  tpDisplay:   { fontSize: 52, fontWeight: "800", color: C.text, minWidth: 70, textAlign: "center", lineHeight: 60 },
+  tpSep:       { fontSize: 48, fontWeight: "300", color: C.textMuted, marginHorizontal: 4, lineHeight: 60, alignSelf: "center", marginTop: 14 },
+  tpArrow:     { width: 44, height: 44, borderRadius: 22, backgroundColor: C.primaryLight, borderWidth: 1, borderColor: C.primaryBorder, alignItems: "center", justifyContent: "center" },
+  tpArrowText: { fontSize: 20, fontWeight: "700", color: C.primary, lineHeight: 22 },
+
+  // ── Date picker modal ──────────────────────────────────────────────────────
+  dpBackdrop:    { flex: 1, backgroundColor: "rgba(15,23,42,0.5)", justifyContent: "flex-end" },
+  dpModal:       { backgroundColor: C.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingBottom: 36 },
+  dpHead:        { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 18, borderBottomWidth: 1, borderBottomColor: C.border },
+  dpTitle:       { fontSize: 17, fontWeight: "800", color: C.text },
+  dpDone:        { fontSize: 15, fontWeight: "700", color: C.primary },
+  dpQuickRow:    { flexDirection: "row", gap: 10, paddingHorizontal: 18, paddingTop: 18 },
+  dpQuickBtn:    { flex: 1, borderWidth: 1.5, borderColor: C.border, borderRadius: 10, paddingVertical: 10, alignItems: "center", backgroundColor: C.bg },
+  dpQuickBtnSel: { borderColor: C.primary, backgroundColor: C.primaryLight },
+  dpQuickText:   { fontSize: 13, fontWeight: "700", color: C.textSub },
+  dpQuickTextSel:{ color: C.primary },
+  dpNavRow:      { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 18, paddingVertical: 20 },
+  dpNavBtn:      { width: 44, height: 44, borderRadius: 22, backgroundColor: C.bg, borderWidth: 1, borderColor: C.border, alignItems: "center", justifyContent: "center" },
+  dpNavBtnText:  { fontSize: 20, fontWeight: "600", color: C.primary },
+  dpDateText:    { fontSize: 18, fontWeight: "800", color: C.text, textAlign: "center" },
+  dpDateSub:     { fontSize: 13, color: C.textMuted, textAlign: "center", marginTop: 2 },
 });

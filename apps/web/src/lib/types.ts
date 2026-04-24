@@ -1,4 +1,4 @@
-export type Role = "admin" | "doctor" | "pharmacist" | "supervisor" | "nurse";
+export type Role = "admin" | "doctor" | "pharmacist" | "chief_nurse" | "nurse";
 export type OrderStatus = "pending" | "verified" | "dispensed";
 
 export interface User {

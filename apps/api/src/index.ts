@@ -1,6 +1,5 @@
 import cors from "cors";
 import express, { NextFunction, Request, Response } from "express";
-import * as mysql from "mysql2/promise";
 import pool from "./db.js";
 import { runMigrations } from "./migrate.js";
 import type { AlertThreshold, Medication, MedicationOrder, OrderStatus, Patient, Role, ScanLog, User } from "./types.js";
@@ -14,10 +13,6 @@ const host = "0.0.0.0";
 
 const makeId = (prefix: string) =>
   `${prefix}-${Math.random().toString(36).slice(2, 8)}`;
-
-function toMySQL(d: Date = new Date()) {
-  return d.toISOString().replace("T", " ").replace(/\.\d{3}Z$/, "");
-}
 
 const ar =
   (fn: (req: Request, res: Response, next: NextFunction) => Promise<unknown>) =>
@@ -41,10 +36,9 @@ app.post("/auth/login", ar(async (req, res) => {
 
   console.log("[login] attempt:", { id, role, hasPassword: !!password });
 
-  const [rows] = await pool.execute<mysql.RowDataPacket[]>(
-    "SELECT id, name, role, active FROM users WHERE id = ? AND password = ? AND active = 1 AND (? IS NULL OR role = ?)",
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    [id, password, role ?? null, role ?? null] as any[]
+  const { rows } = await pool.query(
+    "SELECT id, name, role, active FROM users WHERE id = $1 AND password = $2 AND active = true AND ($3::text IS NULL OR role = $3::text)",
+    [id, password, role ?? null]
   );
 
   console.log("[login] rows found:", rows.length);
@@ -63,17 +57,28 @@ app.post("/auth/login", ar(async (req, res) => {
 // ─── Users (Admin only) ──────────────────────────────────────────────────────
 
 app.get("/users", ar(async (_req, res) => {
-  const [rows] = await pool.query<mysql.RowDataPacket[]>(
+  const { rows } = await pool.query(
     "SELECT id, name, role, active FROM users ORDER BY role, name"
   );
   const users: User[] = rows.map((r) => ({ ...r, active: Boolean(r.active) })) as User[];
   res.json(users);
 }));
 
+const ROLE_PREFIX: Record<string, string> = {
+  nurse: "n", admin: "a", doctor: "d", pharmacist: "ph", chief_nurse: "cn"
+};
+
 app.post("/users", ar(async (req, res) => {
-  const { id, name, role, password } = req.body as { id: string; name: string; role: Role; password: string };
-  await pool.execute(
-    "INSERT INTO users (id, name, role, password, active) VALUES (?, ?, ?, ?, 1)",
+  const { name, role, password } = req.body as { name: string; role: Role; password: string };
+  const prefix = ROLE_PREFIX[role] ?? role[0];
+  const { rows } = await pool.query(
+    `SELECT MAX(CAST(SPLIT_PART(id, '-', 2) AS INTEGER)) AS "maxNum" FROM users WHERE id ~ $1`,
+    [`^${prefix}-[0-9]+$`]
+  );
+  const next = (rows[0].maxNum ?? 99) + 1;
+  const id = `${prefix}-${next}`;
+  await pool.query(
+    "INSERT INTO users (id, name, role, password, active) VALUES ($1, $2, $3, $4, true)",
     [id, name, role, password]
   );
   res.status(201).json({ id, name, role, active: true } satisfies User);
@@ -81,11 +86,11 @@ app.post("/users", ar(async (req, res) => {
 
 app.patch("/users/:id/active", ar(async (req, res) => {
   const { active } = req.body as { active: boolean };
-  const [result] = await pool.execute<mysql.ResultSetHeader>(
-    "UPDATE users SET active = ? WHERE id = ?",
-    [active ? 1 : 0, req.params.id]
+  const result = await pool.query(
+    "UPDATE users SET active = $1 WHERE id = $2",
+    [active, req.params.id]
   );
-  if (result.affectedRows === 0) return res.status(404).json({ message: "Not found" });
+  if ((result.rowCount ?? 0) === 0) return res.status(404).json({ message: "Not found" });
   res.json({ id: req.params.id, active });
 }));
 
@@ -94,11 +99,11 @@ app.patch("/users/:id/password", ar(async (req, res) => {
   if (!password || password.trim().length < 6) {
     return res.status(400).json({ message: "Password must be at least 6 characters." });
   }
-  const [result] = await pool.execute<mysql.ResultSetHeader>(
-    "UPDATE users SET password = ? WHERE id = ?",
+  const result = await pool.query(
+    "UPDATE users SET password = $1 WHERE id = $2",
     [password.trim(), req.params.id]
   );
-  if (result.affectedRows === 0) return res.status(404).json({ message: "User not found" });
+  if ((result.rowCount ?? 0) === 0) return res.status(404).json({ message: "User not found" });
   res.json({ id: req.params.id, message: "Password updated." });
 }));
 
@@ -106,14 +111,15 @@ app.patch("/users/:id/password", ar(async (req, res) => {
 
 const PATIENT_SELECT = `
   SELECT id, mrn, name, dob, ward,
-         bed, allergy_status AS allergyStatus, allergies,
-         patient_status AS patientStatus,
-         attending_physician_id AS attendingPhysicianId,
-         admission_date AS admissionDate
+         bed, allergy_status AS "allergyStatus", allergies,
+         patient_status AS "patientStatus",
+         attending_physician_id AS "attendingPhysicianId",
+         admission_date AS "admissionDate"
   FROM patients
 `;
 
-function mapPatient(r: mysql.RowDataPacket): Patient {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mapPatient(r: any): Patient {
   return {
     id: r.id,
     mrn: r.mrn,
@@ -132,13 +138,13 @@ function mapPatient(r: mysql.RowDataPacket): Patient {
 }
 
 app.get("/patients", ar(async (_req, res) => {
-  const [rows] = await pool.query<mysql.RowDataPacket[]>(`${PATIENT_SELECT} ORDER BY id`);
+  const { rows } = await pool.query(`${PATIENT_SELECT} ORDER BY id`);
   res.json(rows.map(mapPatient));
 }));
 
 app.get("/patients/next-mrn", ar(async (_req, res) => {
-  const [rows] = await pool.query<mysql.RowDataPacket[]>(
-    "SELECT MAX(CAST(SUBSTRING(mrn, 4) AS UNSIGNED)) AS maxNum FROM patients WHERE mrn REGEXP '^MRN[0-9]+$'"
+  const { rows } = await pool.query(
+    `SELECT MAX(CAST(SUBSTRING(mrn FROM 4) AS INTEGER)) AS "maxNum" FROM patients WHERE mrn ~ '^MRN[0-9]+$'`
   );
   const next = (rows[0].maxNum ?? 1000) + 1;
   res.json({ mrn: `MRN${next}` });
@@ -152,19 +158,19 @@ app.post("/patients", ar(async (req, res) => {
   } = req.body as Omit<Patient, "id"> & { mrn?: string };
 
   if (!mrn) {
-    const [rows] = await pool.query<mysql.RowDataPacket[]>(
-      "SELECT MAX(CAST(SUBSTRING(mrn, 4) AS UNSIGNED)) AS maxNum FROM patients WHERE mrn REGEXP '^MRN[0-9]+$'"
+    const { rows } = await pool.query(
+      `SELECT MAX(CAST(SUBSTRING(mrn FROM 4) AS INTEGER)) AS "maxNum" FROM patients WHERE mrn ~ '^MRN[0-9]+$'`
     );
     const next = (rows[0].maxNum ?? 1000) + 1;
     mrn = `MRN${next}`;
   }
 
   const id = makeId("p");
-  await pool.execute(
+  await pool.query(
     `INSERT INTO patients
        (id, mrn, name, dob, ward, bed, allergy_status, allergies,
         patient_status, attending_physician_id, admission_date)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
     [id, mrn, name, dob, ward,
      bed ?? null,
      allergyStatus ?? "none",
@@ -190,39 +196,39 @@ app.put("/patients/:id", ar(async (req, res) => {
     allergyStatus, allergies, patientStatus,
     attendingPhysicianId, admissionDate,
   } = req.body as Partial<Patient>;
-  const [result] = await pool.execute<mysql.ResultSetHeader>(
+  const result = await pool.query(
     `UPDATE patients SET
-       mrn = COALESCE(?, mrn),
-       name = COALESCE(?, name),
-       dob = COALESCE(?, dob),
-       ward = COALESCE(?, ward),
-       bed = COALESCE(?, bed),
-       allergy_status = COALESCE(?, allergy_status),
-       allergies = COALESCE(?, allergies),
-       patient_status = COALESCE(?, patient_status),
-       attending_physician_id = COALESCE(?, attending_physician_id),
-       admission_date = COALESCE(?, admission_date)
-     WHERE id = ?`,
+       mrn = COALESCE($1, mrn),
+       name = COALESCE($2, name),
+       dob = COALESCE($3, dob),
+       ward = COALESCE($4, ward),
+       bed = COALESCE($5, bed),
+       allergy_status = COALESCE($6, allergy_status),
+       allergies = COALESCE($7, allergies),
+       patient_status = COALESCE($8, patient_status),
+       attending_physician_id = COALESCE($9, attending_physician_id),
+       admission_date = COALESCE($10, admission_date)
+     WHERE id = $11`,
     [mrn ?? null, name ?? null, dob ?? null, ward ?? null,
      bed ?? null, allergyStatus ?? null, allergies ?? null,
      patientStatus ?? null, attendingPhysicianId ?? null,
      admissionDate ?? null, req.params.id]
   );
-  if (result.affectedRows === 0) return res.status(404).json({ message: "Not found" });
+  if ((result.rowCount ?? 0) === 0) return res.status(404).json({ message: "Not found" });
 
-  const [rows] = await pool.execute<mysql.RowDataPacket[]>(`${PATIENT_SELECT} WHERE id = ?`, [req.params.id]);
+  const { rows } = await pool.query(`${PATIENT_SELECT} WHERE id = $1`, [req.params.id]);
   res.json(mapPatient(rows[0]));
 }));
 
 app.delete("/patients/:id", ar(async (req, res) => {
-  const [rows] = await pool.execute<mysql.RowDataPacket[]>(`${PATIENT_SELECT} WHERE id = ?`, [req.params.id]);
+  const { rows } = await pool.query(`${PATIENT_SELECT} WHERE id = $1`, [req.params.id]);
   if (rows.length === 0) return res.status(404).json({ message: "Not found" });
-  await pool.execute("DELETE FROM patients WHERE id = ?", [req.params.id]);
+  await pool.query("DELETE FROM patients WHERE id = $1", [req.params.id]);
   res.json(mapPatient(rows[0]));
 }));
 
 app.get("/patients/:id", ar(async (req, res) => {
-  const [rows] = await pool.execute<mysql.RowDataPacket[]>(`${PATIENT_SELECT} WHERE id = ?`, [req.params.id]);
+  const { rows } = await pool.query(`${PATIENT_SELECT} WHERE id = $1`, [req.params.id]);
   if (rows.length === 0) return res.status(404).json({ message: "Patient not found" });
   res.json(mapPatient(rows[0]));
 }));
@@ -230,17 +236,22 @@ app.get("/patients/:id", ar(async (req, res) => {
 // ─── Medications ─────────────────────────────────────────────────────────────
 
 app.get("/medications", ar(async (_req, res) => {
-  const [rows] = await pool.query<mysql.RowDataPacket[]>(
+  const { rows } = await pool.query(
     "SELECT id, code, name, dose, route FROM medications ORDER BY id"
   );
   res.json(rows as Medication[]);
 }));
 
 app.post("/medications", ar(async (req, res) => {
-  const { code, name, dose, route } = req.body as Omit<Medication, "id">;
+  const { name, dose, route } = req.body as Omit<Medication, "id" | "code">;
+  const { rows } = await pool.query(
+    `SELECT MAX(CAST(SUBSTRING(code FROM 4) AS INTEGER)) AS "maxNum" FROM medications WHERE code ~ '^MED[0-9]+$'`
+  );
+  const next = (rows[0].maxNum ?? 1000) + 1;
+  const code = `MED${next}`;
   const id = makeId("m");
-  await pool.execute(
-    "INSERT INTO medications (id, code, name, dose, route) VALUES (?, ?, ?, ?, ?)",
+  await pool.query(
+    "INSERT INTO medications (id, code, name, dose, route) VALUES ($1, $2, $3, $4, $5)",
     [id, code, name, dose, route]
   );
   res.status(201).json({ id, code, name, dose, route } satisfies Medication);
@@ -248,24 +259,24 @@ app.post("/medications", ar(async (req, res) => {
 
 app.put("/medications/:id", ar(async (req, res) => {
   const { code, name, dose, route } = req.body as Partial<Medication>;
-  const [result] = await pool.execute<mysql.ResultSetHeader>(
-    "UPDATE medications SET code = COALESCE(?, code), name = COALESCE(?, name), dose = COALESCE(?, dose), route = COALESCE(?, route) WHERE id = ?",
+  const result = await pool.query(
+    "UPDATE medications SET code = COALESCE($1, code), name = COALESCE($2, name), dose = COALESCE($3, dose), route = COALESCE($4, route) WHERE id = $5",
     [code ?? null, name ?? null, dose ?? null, route ?? null, req.params.id]
   );
-  if (result.affectedRows === 0) return res.status(404).json({ message: "Not found" });
+  if ((result.rowCount ?? 0) === 0) return res.status(404).json({ message: "Not found" });
 
-  const [rows] = await pool.execute<mysql.RowDataPacket[]>(
-    "SELECT id, code, name, dose, route FROM medications WHERE id = ?", [req.params.id]
+  const { rows } = await pool.query(
+    "SELECT id, code, name, dose, route FROM medications WHERE id = $1", [req.params.id]
   );
   res.json(rows[0] as Medication);
 }));
 
 app.delete("/medications/:id", ar(async (req, res) => {
-  const [rows] = await pool.execute<mysql.RowDataPacket[]>(
-    "SELECT id, code, name, dose, route FROM medications WHERE id = ?", [req.params.id]
+  const { rows } = await pool.query(
+    "SELECT id, code, name, dose, route FROM medications WHERE id = $1", [req.params.id]
   );
   if (rows.length === 0) return res.status(404).json({ message: "Not found" });
-  await pool.execute("DELETE FROM medications WHERE id = ?", [req.params.id]);
+  await pool.query("DELETE FROM medications WHERE id = $1", [req.params.id]);
   res.json(rows[0] as Medication);
 }));
 
@@ -273,17 +284,18 @@ app.delete("/medications/:id", ar(async (req, res) => {
 
 const ORDER_SELECT = `
   SELECT id,
-         patient_id       AS patientId,
-         medication_id    AS medicationId,
-         prescribed_dose  AS prescribedDose,
-         prescribed_route AS prescribedRoute,
-         scheduled_time   AS scheduledTime,
-         prescription_id  AS prescriptionId,
+         patient_id       AS "patientId",
+         medication_id    AS "medicationId",
+         prescribed_dose  AS "prescribedDose",
+         prescribed_route AS "prescribedRoute",
+         scheduled_time   AS "scheduledTime",
+         prescription_id  AS "prescriptionId",
          active,
          status
   FROM medication_orders`;
 
-const mapOrder = (r: mysql.RowDataPacket): MedicationOrder => ({
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const mapOrder = (r: any): MedicationOrder => ({
   id: r.id,
   patientId: r.patientId,
   medicationId: r.medicationId,
@@ -296,7 +308,7 @@ const mapOrder = (r: mysql.RowDataPacket): MedicationOrder => ({
 });
 
 app.get("/orders", ar(async (_req, res) => {
-  const [rows] = await pool.query<mysql.RowDataPacket[]>(ORDER_SELECT + " ORDER BY id");
+  const { rows } = await pool.query(ORDER_SELECT + " ORDER BY id");
   res.json(rows.map(mapOrder));
 }));
 
@@ -306,20 +318,20 @@ app.post("/orders", ar(async (req, res) => {
     prescribedRoute, scheduledTime, prescriptionId, active
   } = req.body as Omit<MedicationOrder, "id" | "status">;
 
-  const [pRows] = await pool.execute<mysql.RowDataPacket[]>(
-    "SELECT id FROM patients WHERE id = ?", [patientId]
+  const { rows: pRows } = await pool.query(
+    "SELECT id FROM patients WHERE id = $1", [patientId]
   );
-  const [mRows] = await pool.execute<mysql.RowDataPacket[]>(
-    "SELECT id FROM medications WHERE id = ?", [medicationId]
+  const { rows: mRows } = await pool.query(
+    "SELECT id FROM medications WHERE id = $1", [medicationId]
   );
   if (pRows.length === 0 || mRows.length === 0) {
     return res.status(400).json({ message: "Invalid patientId or medicationId" });
   }
 
   const id = makeId("o");
-  await pool.execute(
-    "INSERT INTO medication_orders (id, patient_id, medication_id, prescribed_dose, prescribed_route, scheduled_time, prescription_id, active, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')",
-    [id, patientId, medicationId, prescribedDose, prescribedRoute, scheduledTime, prescriptionId, active ? 1 : 0]
+  await pool.query(
+    "INSERT INTO medication_orders (id, patient_id, medication_id, prescribed_dose, prescribed_route, scheduled_time, prescription_id, active, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending')",
+    [id, patientId, medicationId, prescribedDose, prescribedRoute, scheduledTime, prescriptionId, active ?? false]
   );
   res.status(201).json({
     id, patientId, medicationId, prescribedDose,
@@ -334,27 +346,27 @@ app.put("/orders/:id", ar(async (req, res) => {
     prescribedRoute, scheduledTime, prescriptionId, active
   } = req.body as Partial<MedicationOrder>;
 
-  const [result] = await pool.execute<mysql.ResultSetHeader>(
+  const result = await pool.query(
     `UPDATE medication_orders SET
-       patient_id       = COALESCE(?, patient_id),
-       medication_id    = COALESCE(?, medication_id),
-       prescribed_dose  = COALESCE(?, prescribed_dose),
-       prescribed_route = COALESCE(?, prescribed_route),
-       scheduled_time   = COALESCE(?, scheduled_time),
-       prescription_id  = COALESCE(?, prescription_id),
-       active           = COALESCE(?, active)
-     WHERE id = ?`,
+       patient_id       = COALESCE($1, patient_id),
+       medication_id    = COALESCE($2, medication_id),
+       prescribed_dose  = COALESCE($3, prescribed_dose),
+       prescribed_route = COALESCE($4, prescribed_route),
+       scheduled_time   = COALESCE($5, scheduled_time),
+       prescription_id  = COALESCE($6, prescription_id),
+       active           = COALESCE($7, active)
+     WHERE id = $8`,
     [
       patientId ?? null, medicationId ?? null,
       prescribedDose ?? null, prescribedRoute ?? null,
       scheduledTime ?? null, prescriptionId ?? null,
-      active !== undefined ? (active ? 1 : 0) : null,
+      active !== undefined ? active : null,
       req.params.id
     ]
   );
-  if (result.affectedRows === 0) return res.status(404).json({ message: "Not found" });
+  if ((result.rowCount ?? 0) === 0) return res.status(404).json({ message: "Not found" });
 
-  const [rows] = await pool.execute<mysql.RowDataPacket[]>(ORDER_SELECT + " WHERE id = ?", [req.params.id]);
+  const { rows } = await pool.query(ORDER_SELECT + " WHERE id = $1", [req.params.id]);
   res.json(mapOrder(rows[0]));
 }));
 
@@ -364,20 +376,20 @@ app.patch("/orders/:id/status", ar(async (req, res) => {
   if (!valid.includes(status)) {
     return res.status(400).json({ message: "Invalid status" });
   }
-  const [result] = await pool.execute<mysql.ResultSetHeader>(
-    "UPDATE medication_orders SET status = ? WHERE id = ?",
+  const result = await pool.query(
+    "UPDATE medication_orders SET status = $1 WHERE id = $2",
     [status, req.params.id]
   );
-  if (result.affectedRows === 0) return res.status(404).json({ message: "Not found" });
+  if ((result.rowCount ?? 0) === 0) return res.status(404).json({ message: "Not found" });
 
-  const [rows] = await pool.execute<mysql.RowDataPacket[]>(ORDER_SELECT + " WHERE id = ?", [req.params.id]);
+  const { rows } = await pool.query(ORDER_SELECT + " WHERE id = $1", [req.params.id]);
   res.json(mapOrder(rows[0]));
 }));
 
 app.delete("/orders/:id", ar(async (req, res) => {
-  const [rows] = await pool.execute<mysql.RowDataPacket[]>(ORDER_SELECT + " WHERE id = ?", [req.params.id]);
+  const { rows } = await pool.query(ORDER_SELECT + " WHERE id = $1", [req.params.id]);
   if (rows.length === 0) return res.status(404).json({ message: "Not found" });
-  await pool.execute("DELETE FROM medication_orders WHERE id = ?", [req.params.id]);
+  await pool.query("DELETE FROM medication_orders WHERE id = $1", [req.params.id]);
   res.json(mapOrder(rows[0]));
 }));
 
@@ -387,34 +399,34 @@ app.get("/logs", ar(async (req, res) => {
   const { from, to } = req.query as { from?: string; to?: string };
 
   let sql = `SELECT id,
-             nurse_id      AS nurseId,
-             patient_id    AS patientId,
-             medication_id AS medicationId,
-             order_id      AS orderId,
+             nurse_id      AS "nurseId",
+             patient_id    AS "patientId",
+             medication_id AS "medicationId",
+             order_id      AS "orderId",
              timestamp,
-             error_types   AS errorTypes
+             error_types   AS "errorTypes"
            FROM scan_logs`;
   const params: string[] = [];
 
   if (from && to) {
-    sql += " WHERE timestamp >= ? AND timestamp <= ?";
+    sql += " WHERE timestamp >= $1 AND timestamp <= $2";
     params.push(from, to);
   } else if (from) {
-    sql += " WHERE timestamp >= ?";
+    sql += " WHERE timestamp >= $1";
     params.push(from);
   } else if (to) {
-    sql += " WHERE timestamp <= ?";
+    sql += " WHERE timestamp <= $1";
     params.push(to);
   }
 
   sql += " ORDER BY timestamp DESC";
 
-  const [rows] = await pool.execute<mysql.RowDataPacket[]>(sql, params);
+  const { rows } = await pool.query(sql, params);
   const logs: ScanLog[] = rows.map((r) => ({
     id: r.id, nurseId: r.nurseId, patientId: r.patientId,
     medicationId: r.medicationId, orderId: r.orderId ?? undefined,
     timestamp: r.timestamp instanceof Date ? r.timestamp.toISOString() : r.timestamp,
-    errorTypes: typeof r.errorTypes === "string" ? JSON.parse(r.errorTypes) : (r.errorTypes ?? [])
+    errorTypes: Array.isArray(r.errorTypes) ? r.errorTypes : (typeof r.errorTypes === "string" ? JSON.parse(r.errorTypes) : [])
   }));
   res.json(logs);
 }));
@@ -422,18 +434,18 @@ app.get("/logs", ar(async (req, res) => {
 app.post("/logs", ar(async (req, res) => {
   const body = req.body as Omit<ScanLog, "id" | "timestamp"> & { timestamp?: string };
   const id = makeId("log");
-  const timestamp = toMySQL(body.timestamp ? new Date(body.timestamp) : undefined);
-  const errorTypesJson = JSON.stringify(body.errorTypes ?? []);
+  const timestamp = body.timestamp ? new Date(body.timestamp).toISOString() : new Date().toISOString();
+  const errorTypes = body.errorTypes ?? [];
 
-  await pool.execute(
-    "INSERT INTO scan_logs (id, nurse_id, patient_id, medication_id, order_id, timestamp, error_types) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    [id, body.nurseId, body.patientId, body.medicationId, body.orderId ?? null, timestamp, errorTypesJson]
+  await pool.query(
+    "INSERT INTO scan_logs (id, nurse_id, patient_id, medication_id, order_id, timestamp, error_types) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+    [id, body.nurseId, body.patientId, body.medicationId, body.orderId ?? null, timestamp, JSON.stringify(errorTypes)]
   );
 
   res.status(201).json({
     id, nurseId: body.nurseId, patientId: body.patientId,
     medicationId: body.medicationId, orderId: body.orderId,
-    timestamp, errorTypes: body.errorTypes ?? []
+    timestamp, errorTypes
   } satisfies ScanLog);
 }));
 
@@ -442,34 +454,34 @@ app.patch("/logs/:id/eval", ar(async (req, res) => {
     adverseReaction: boolean;
     evalNotes?: string;
   };
-  const evalTime = toMySQL();
-  const [result] = await pool.execute<mysql.ResultSetHeader>(
-    "UPDATE scan_logs SET adverse_reaction = ?, eval_notes = ?, eval_time = ? WHERE id = ?",
-    [adverseReaction ? 1 : 0, evalNotes ?? null, evalTime, req.params.id]
+  const evalTime = new Date().toISOString();
+  const result = await pool.query(
+    "UPDATE scan_logs SET adverse_reaction = $1, eval_notes = $2, eval_time = $3 WHERE id = $4",
+    [adverseReaction, evalNotes ?? null, evalTime, req.params.id]
   );
-  if (result.affectedRows === 0) return res.status(404).json({ message: "Log not found" });
+  if ((result.rowCount ?? 0) === 0) return res.status(404).json({ message: "Log not found" });
   res.json({ id: req.params.id, adverseReaction, evalNotes, evalTime });
 }));
 
 // ─── Alert Thresholds ────────────────────────────────────────────────────────
 
 app.get("/alerts/thresholds", ar(async (_req, res) => {
-  const [rows] = await pool.query<mysql.RowDataPacket[]>(
-    "SELECT id, metric, threshold_value AS thresholdValue, updated_at AS updatedAt FROM alert_thresholds"
+  const { rows } = await pool.query(
+    `SELECT id, metric, threshold_value AS "thresholdValue", updated_at AS "updatedAt" FROM alert_thresholds`
   );
   res.json(rows as AlertThreshold[]);
 }));
 
 app.put("/alerts/thresholds/:id", ar(async (req, res) => {
   const { thresholdValue } = req.body as { thresholdValue: number };
-  const [result] = await pool.execute<mysql.ResultSetHeader>(
-    "UPDATE alert_thresholds SET threshold_value = ? WHERE id = ?",
+  const result = await pool.query(
+    "UPDATE alert_thresholds SET threshold_value = $1 WHERE id = $2",
     [thresholdValue, req.params.id]
   );
-  if (result.affectedRows === 0) return res.status(404).json({ message: "Not found" });
+  if ((result.rowCount ?? 0) === 0) return res.status(404).json({ message: "Not found" });
 
-  const [rows] = await pool.execute<mysql.RowDataPacket[]>(
-    "SELECT id, metric, threshold_value AS thresholdValue, updated_at AS updatedAt FROM alert_thresholds WHERE id = ?",
+  const { rows } = await pool.query(
+    `SELECT id, metric, threshold_value AS "thresholdValue", updated_at AS "updatedAt" FROM alert_thresholds WHERE id = $1`,
     [req.params.id]
   );
   res.json(rows[0] as AlertThreshold);
@@ -480,8 +492,8 @@ app.put("/alerts/thresholds/:id", ar(async (req, res) => {
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
   const code = (err as NodeJS.ErrnoException).code;
-  if (code === "ECONNREFUSED" || code === "ENOTFOUND" || code === "PROTOCOL_CONNECTION_LOST") {
-    console.error("[db] MySQL unreachable:", err.message);
+  if (code === "ECONNREFUSED" || code === "ENOTFOUND" || code === "ECONNRESET") {
+    console.error("[db] PostgreSQL unreachable:", err.message);
     return res.status(503).json({ message: "Database unavailable.", code });
   }
   console.error("[api] Unhandled error:", err);
@@ -494,7 +506,8 @@ runMigrations()
   .then(() => {
     app.listen(port, host, () => {
       console.log(`SafeMedsQR API running on http://localhost:${port}`);
-      console.log(`Database: ${process.env.DB_NAME ?? "safemedsqr"} @ ${process.env.DB_HOST ?? "localhost"}`);
+      const dbUrl = process.env.DATABASE_URL?.replace(/:[^:@]+@/, ":***@") ?? "unset";
+      console.log(`Database: ${dbUrl}`);
     });
   })
   .catch((err) => {
