@@ -3,8 +3,7 @@ import Constants from "expo-constants";
 import type { Medication, MedicationOrder, Patient, ScanLog } from "./types";
 
 function resolveApiBase() {
-  const envBase = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
-    ?.env?.EXPO_PUBLIC_API_BASE_URL;
+  const envBase = process.env.EXPO_PUBLIC_API_BASE_URL;
   if (envBase) return envBase;
 
   const hostUri =
