@@ -36,7 +36,9 @@ export const changeUserPassword = (id: string, password: string) =>
 // ── Patients ──────────────────────────────────────────────────────────────────
 
 export const getPatients = () => req<Patient[]>("/patients");
-export const createPatient = (body: Omit<Patient, "id">) => req<Patient>("/patients", json("POST", body));
+export const getNextMrn = () => req<{ mrn: string }>("/patients/next-mrn");
+export const createPatient = (body: Omit<Patient, "id" | "mrn"> & { mrn?: string }) =>
+  req<Patient>("/patients", json("POST", body));
 export const updatePatient = (id: string, body: Partial<Patient>) =>
   req<Patient>(`/patients/${id}`, json("PUT", body));
 export const deletePatient = (id: string) => req<Patient>(`/patients/${id}`, { method: "DELETE" });

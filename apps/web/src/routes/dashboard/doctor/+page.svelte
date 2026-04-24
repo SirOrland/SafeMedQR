@@ -130,7 +130,7 @@
             </label>
             <label class="field">
               <span>Scheduled Time *</span>
-              <input placeholder="HH:mm" bind:value={orderForm.scheduledTime}/>
+              <input type="time" bind:value={orderForm.scheduledTime}/>
             </label>
             <label class="field">
               <span>Prescription ID</span>

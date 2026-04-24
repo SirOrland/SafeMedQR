@@ -18,12 +18,14 @@ import { StatusBar } from "expo-status-bar";
 
 const STATUSBAR_H = Platform.OS === "android" ? (RNStatusBar.currentHeight ?? 24) : 0;
 import { CameraView, useCameraPermissions } from "expo-camera";
+import * as Notifications from "expo-notifications";
 import {
   createScanLog,
   getMedications,
   getMyLogs,
   getOrders,
   getPatient,
+  getPatients,
   nurseLogin,
   submitPostEval,
 } from "./src/api";
@@ -196,6 +198,18 @@ const sh = StyleSheet.create({
   stepText:    { fontSize: 10, fontWeight: "800", color: C.primaryDark, letterSpacing: 0.5 },
 });
 
+// ── Notification handler (must be set before any scheduling) ─────────────────
+
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldShowBanner: true,
+    shouldShowList: true,
+    shouldPlaySound: true,
+    shouldSetBadge: true,
+  }),
+});
+
 // ── App ───────────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -207,6 +221,7 @@ export default function App() {
 
   const [orders, setOrders]       = useState<MedicationOrder[]>([]);
   const [meds, setMeds]           = useState<Medication[]>([]);
+  const [patients, setPatients]   = useState<Patient[]>([]);
   const [shiftLogs, setShiftLogs] = useState<ScanLog[]>([]);
 
   const [patient, setPatient]     = useState<Patient | null>(null);
@@ -242,15 +257,65 @@ export default function App() {
 
   // ── Data loading & offline ──────────────────────────────────────────────────
 
+  async function scheduleMedReminders(pendingOrders: MedicationOrder[], pts: Patient[], medications: Medication[]) {
+    try {
+      const { status } = await Notifications.getPermissionsAsync();
+      if (status !== "granted") return;
+
+      await Notifications.cancelAllScheduledNotificationsAsync();
+
+      const patMap = new Map(pts.map((p) => [p.id, p]));
+      const medMap = new Map(medications.map((m) => [m.id, m]));
+
+      const overdue  = pendingOrders.filter((o) => getMedAlertStatus(o.scheduledTime) === "overdue");
+      const dueSoon  = pendingOrders.filter((o) => getMedAlertStatus(o.scheduledTime) === "due-soon");
+
+      if (overdue.length > 0) {
+        const names = overdue.slice(0, 3).map((o) => patMap.get(o.patientId)?.name ?? o.patientId).join(", ");
+        await Notifications.scheduleNotificationAsync({
+          content: {
+            title: `⚠️ ${overdue.length} Overdue Medication${overdue.length > 1 ? "s" : ""}`,
+            body: names,
+            sound: true,
+          },
+          trigger: null,
+        });
+      }
+
+      for (const order of dueSoon) {
+        const [h, min] = order.scheduledTime.split(":").map(Number);
+        const triggerDate = new Date();
+        triggerDate.setHours(h, min, 0, 0);
+        if (triggerDate <= new Date()) continue;
+
+        const patient = patMap.get(order.patientId);
+        const med     = medMap.get(order.medicationId);
+        await Notifications.scheduleNotificationAsync({
+          identifier: `reminder-${order.id}`,
+          content: {
+            title: "⏰ Medication Due Soon",
+            body: `${patient?.name ?? order.patientId}: ${med?.name ?? order.medicationId} at ${order.scheduledTime}`,
+            sound: true,
+          },
+          trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: triggerDate },
+        });
+      }
+    } catch { /* non-critical */ }
+  }
+
   async function loadReferenceData(nurseId: string) {
     try {
-      const [o, m, logs] = await Promise.all([getOrders(), getMedications(), getMyLogs(nurseId)]);
+      const [o, m, pts, logs] = await Promise.all([getOrders(), getMedications(), getPatients(), getMyLogs(nurseId)]);
       const activeOrders = o.filter((x) => x.active);
       setOrders(activeOrders);
       setMeds(m);
+      setPatients(pts);
       setShiftLogs(logs);
-      await saveCache({ orders: activeOrders, medications: m, cachedAt: new Date().toISOString() });
+      await saveCache({ orders: activeOrders, medications: m, patients: pts, cachedAt: new Date().toISOString() });
       setIsOffline(false);
+
+      const pendingOrders = activeOrders.filter((x) => x.status === "pending");
+      await scheduleMedReminders(pendingOrders, pts, m);
 
       const pending = await getPendingLogs();
       if (pending.length > 0) {
@@ -268,11 +333,38 @@ export default function App() {
       }
     } catch {
       const cache = await loadCache();
-      if (cache) { setOrders(cache.orders); setMeds(cache.medications); setIsOffline(true); }
+      if (cache) {
+        setOrders(cache.orders);
+        setMeds(cache.medications);
+        setPatients(cache.patients ?? []);
+        setIsOffline(true);
+      }
     }
   }
 
   // ── Login / logout ──────────────────────────────────────────────────────────
+
+  // ── Notification permission + auto-refresh ─────────────────────────────────
+
+  useEffect(() => {
+    if (!session) return;
+    Notifications.requestPermissionsAsync().then(({ status }) => {
+      if (status !== "granted") {
+        Alert.alert("Notifications Off", "Enable notifications in settings to receive medication reminders.");
+      }
+    }).catch(() => { /* not supported in this environment */ });
+    if (Platform.OS === "android") {
+      Notifications.setNotificationChannelAsync("med-reminders", {
+        name: "Medication Reminders",
+        importance: Notifications.AndroidImportance.HIGH,
+        sound: "default",
+      }).catch(() => { /* non-critical */ });
+    }
+    const interval = setInterval(() => {
+      loadReferenceData(session.nurseId);
+    }, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [session]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleLogin() {
     if (!nurseIdInput.trim() || !passwordInput.trim()) {
@@ -440,9 +532,12 @@ export default function App() {
   const hasPendingManual = useMemo(() => Object.values(manualStatuses).some((v) => v === "yellow"), [manualStatuses]);
   const canAdminister    = !hasAutoFail && !hasPendingManual;
 
+  const patientMap    = useMemo(() => new Map(patients.map((p) => [p.id, p])), [patients]);
   const allPendingOrders = useMemo(() => orders.filter((o) => o.status === "pending"), [orders]);
-  const overdueCount  = useMemo(() => allPendingOrders.filter((o) => getMedAlertStatus(o.scheduledTime) === "overdue").length,  [allPendingOrders]);
-  const dueSoonCount  = useMemo(() => allPendingOrders.filter((o) => getMedAlertStatus(o.scheduledTime) === "due-soon").length, [allPendingOrders]);
+  const overdueOrders = useMemo(() => allPendingOrders.filter((o) => getMedAlertStatus(o.scheduledTime) === "overdue").sort((a, b) => a.scheduledTime.localeCompare(b.scheduledTime)),  [allPendingOrders]);
+  const dueSoonOrders = useMemo(() => allPendingOrders.filter((o) => getMedAlertStatus(o.scheduledTime) === "due-soon").sort((a, b) => a.scheduledTime.localeCompare(b.scheduledTime)), [allPendingOrders]);
+  const overdueCount  = overdueOrders.length;
+  const dueSoonCount  = dueSoonOrders.length;
   const onTimeCount   = useMemo(() => allPendingOrders.filter((o) => getMedAlertStatus(o.scheduledTime) === "on-time").length,  [allPendingOrders]);
 
   const manualConfirmedCount = useMemo(() => MANUAL_KEYS.filter((k) => manualConfirm[k]).length, [manualConfirm]);
@@ -586,25 +681,61 @@ export default function App() {
             ))}
           </View>
 
-          {/* Pending orders */}
-          {allPendingOrders.length > 0 && (
+          {/* Overdue patients */}
+          {overdueOrders.length > 0 && (
             <>
-              <Text style={styles.sectionTitle}>Pending Orders</Text>
-              {allPendingOrders.map((o) => {
-                const st = getMedAlertStatus(o.scheduledTime);
+              <Text style={styles.sectionTitle}>Overdue — Action Required</Text>
+              {overdueOrders.map((o) => {
+                const pat = patientMap.get(o.patientId);
                 return (
-                  <View key={o.id} style={[styles.pendingRow, { borderLeftColor: alertColor(st), backgroundColor: alertBg(st), borderColor: alertBorder(st) }]}>
+                  <View key={o.id} style={[styles.pendingRow, { borderLeftColor: C.danger, backgroundColor: C.dangerLight, borderColor: C.dangerBorder }]}>
                     <View style={styles.pendingRowInner}>
-                      <Text style={styles.pendingMed}>{medName(o.medicationId)}</Text>
-                      <View style={[styles.timePill, { backgroundColor: alertColor(st) }]}>
+                      <View style={{ flex: 1, marginRight: 8 }}>
+                        <Text style={styles.pendingPatient}>{pat?.name ?? o.patientId}</Text>
+                        <Text style={styles.pendingMed}>{medName(o.medicationId)}</Text>
+                        {pat && <Text style={styles.pendingWard}>{pat.ward}{pat.bed ? ` · Bed ${pat.bed}` : ""} · {pat.mrn}</Text>}
+                      </View>
+                      <View style={[styles.timePill, { backgroundColor: C.danger }]}>
                         <Text style={styles.timePillText}>{o.scheduledTime}</Text>
                       </View>
                     </View>
-                    <Text style={styles.pendingStatus}>{alertDot(st)}  {st === "overdue" ? "Overdue" : st === "due-soon" ? "Due soon" : "On time"}</Text>
+                    <Text style={styles.pendingStatus}>🔴  Overdue</Text>
                   </View>
                 );
               })}
             </>
+          )}
+
+          {/* Due-soon patients */}
+          {dueSoonOrders.length > 0 && (
+            <>
+              <Text style={styles.sectionTitle}>Due Soon — Within 30 min</Text>
+              {dueSoonOrders.map((o) => {
+                const pat = patientMap.get(o.patientId);
+                return (
+                  <View key={o.id} style={[styles.pendingRow, { borderLeftColor: C.warning, backgroundColor: C.warningLight, borderColor: C.warningBorder }]}>
+                    <View style={styles.pendingRowInner}>
+                      <View style={{ flex: 1, marginRight: 8 }}>
+                        <Text style={styles.pendingPatient}>{pat?.name ?? o.patientId}</Text>
+                        <Text style={styles.pendingMed}>{medName(o.medicationId)}</Text>
+                        {pat && <Text style={styles.pendingWard}>{pat.ward}{pat.bed ? ` · Bed ${pat.bed}` : ""} · {pat.mrn}</Text>}
+                      </View>
+                      <View style={[styles.timePill, { backgroundColor: C.warning }]}>
+                        <Text style={styles.timePillText}>{o.scheduledTime}</Text>
+                      </View>
+                    </View>
+                    <Text style={styles.pendingStatus}>🟡  Due soon</Text>
+                  </View>
+                );
+              })}
+            </>
+          )}
+
+          {allPendingOrders.length === 0 && (
+            <View style={styles.emptyBox}>
+              <Text style={styles.emptyIcon}>✅</Text>
+              <Text style={styles.emptyText}>No pending medications right now.</Text>
+            </View>
           )}
 
           {/* Actions */}
@@ -789,8 +920,21 @@ export default function App() {
                       }]}>{order.status.toUpperCase()}</Text>
                     </View>
                   </View>
-                  <Text style={styles.orderDetail}>Dose: {order.prescribedDose}  ·  Route: {order.prescribedRoute}</Text>
-                  <Text style={styles.orderDetail}>Scheduled: {order.scheduledTime}  ·  Rx: {order.prescriptionId}</Text>
+                  <View style={styles.orderFieldList}>
+                    {[
+                      { label: "Patient ID",      value: order.patientId },
+                      { label: "Medication ID",   value: order.medicationId },
+                      { label: "Dose",            value: order.prescribedDose },
+                      { label: "Route",           value: order.prescribedRoute },
+                      { label: "Scheduled Time",  value: order.scheduledTime },
+                      { label: "Rx ID",           value: order.prescriptionId ?? "—" },
+                    ].map((f) => (
+                      <View key={f.label} style={styles.orderFieldRow}>
+                        <Text style={styles.orderFieldLabel}>{f.label}</Text>
+                        <Text style={styles.orderFieldValue}>{f.value}</Text>
+                      </View>
+                    ))}
+                  </View>
                   {done && <Text style={styles.dispensedNote}>Already dispensed — cannot re-administer</Text>}
                 </TouchableOpacity>
               );
@@ -1112,8 +1256,10 @@ const styles = StyleSheet.create({
 
   pendingRow: { borderLeftWidth: 4, borderRadius: 12, padding: 12, marginBottom: 8, borderWidth: 1 },
   pendingRowInner: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  pendingMed:    { fontSize: 14, fontWeight: "700", color: C.text, flex: 1, marginRight: 8 },
-  pendingStatus: { fontSize: 12, color: C.textSub, marginTop: 4 },
+  pendingPatient: { fontSize: 15, fontWeight: "800", color: C.text, marginBottom: 1 },
+  pendingMed:    { fontSize: 13, fontWeight: "600", color: C.textSub },
+  pendingWard:   { fontSize: 11, color: C.textMuted, marginTop: 2 },
+  pendingStatus: { fontSize: 12, color: C.textSub, marginTop: 6 },
   timePill: { borderRadius: 8, paddingHorizontal: 8, paddingVertical: 3 },
   timePillText: { fontSize: 11, fontWeight: "800", color: "#fff" },
 
@@ -1184,9 +1330,13 @@ const styles = StyleSheet.create({
     shadowColor: C.text, shadowOpacity: 0.04, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 1,
   },
   orderCardDim:  { opacity: 0.5 },
-  orderCardTop:  { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 6 },
+  orderCardTop:  { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 8 },
   orderMedName:  { fontSize: 15, fontWeight: "800", color: C.text, flex: 1, marginRight: 8 },
   orderDetail:   { fontSize: 12, color: C.textSub, marginTop: 2 },
+  orderFieldList: { gap: 6, marginTop: 2 },
+  orderFieldRow:  { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  orderFieldLabel: { fontSize: 12, fontWeight: "700", color: C.textMuted, flex: 1 },
+  orderFieldValue: { fontSize: 12, fontWeight: "600", color: C.text, flexShrink: 1, textAlign: "right" },
   dispensedNote: { fontSize: 11, color: C.textMuted, fontStyle: "italic", marginTop: 6 },
   statusPill:    { borderRadius: 999, paddingHorizontal: 9, paddingVertical: 4 },
   statusPillText: { fontSize: 10, fontWeight: "800" },

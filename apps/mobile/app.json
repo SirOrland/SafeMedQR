@@ -12,6 +12,17 @@
       "eas": {
         "projectId": "5a3f5e2e-bbaa-4502-b4cb-fe71c576d5ac"
       }
+    },
+    "plugins": [
+      [
+        "expo-notifications",
+        {
+          "color": "#1d4ed8"
+        }
+      ]
+    ],
+    "android": {
+      "package": "com.siranne.safemedsqr"
     }
   }
 }

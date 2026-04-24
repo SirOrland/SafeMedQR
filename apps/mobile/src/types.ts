@@ -84,6 +84,7 @@ export interface PendingLog {
 export interface OfflineCache {
   orders: MedicationOrder[];
   medications: Medication[];
+  patients: Patient[];
   cachedAt: string;
 }
 

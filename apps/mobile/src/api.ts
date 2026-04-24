@@ -63,6 +63,7 @@ export async function nurseLogin(id: string, password: string) {
 }
 
 export const getPatient = (id: string) => req<Patient>(`/patients/${id}`);
+export const getPatients = () => req<Patient[]>("/patients");
 export const getOrders = () => req<MedicationOrder[]>("/orders");
 export const getMedications = () => req<Medication[]>("/medications");
 

@@ -5,7 +5,7 @@
     changeUserPassword,
     createMedication, createOrder, createPatient, createUser,
     deleteMedication, deleteOrder, deletePatient,
-    getLogs, getMedications, getOrders, getPatients,
+    getLogs, getMedications, getNextMrn, getOrders, getPatients,
     getThresholds, getUsers, setUserActive, updateThreshold
   } from "$lib/api";
   import { clearSession, session } from "$lib/session";
@@ -25,8 +25,9 @@
   let toDate = "";
 
   let userForm = { id: "", name: "", role: "nurse" as Role, password: "" };
+  let nextMrn = "";
   let patientForm = {
-    mrn: "", name: "", dob: "", ward: "", bed: "",
+    name: "", dob: "", ward: "", bed: "",
     allergyStatus: "none" as "none" | "present",
     allergies: "",
     patientStatus: "active" as "active" | "discharged" | "transferred",
@@ -52,6 +53,7 @@
       getLogs(fromDate || undefined, toDate || undefined), getThresholds()
     ]);
     editThresholds = Object.fromEntries(thresholds.map(t => [t.id, t.thresholdValue]));
+    nextMrn = (await getNextMrn()).mrn;
   }
 
   async function openQr(id: string, title: string, sub: string) {
@@ -78,7 +80,7 @@
   async function toggleActive(u: User) { await setUserActive(u.id, !u.active); await loadAll(); }
   async function addPatient() {
     await createPatient(patientForm);
-    patientForm = { mrn: "", name: "", dob: "", ward: "", bed: "", allergyStatus: "none", allergies: "", patientStatus: "active", attendingPhysicianId: "", admissionDate: "" };
+    patientForm = { name: "", dob: "", ward: "", bed: "", allergyStatus: "none", allergies: "", patientStatus: "active", attendingPhysicianId: "", admissionDate: "" };
     await loadAll();
   }
   async function addMed() { await createMedication(medForm); medForm = { code: "", name: "", dose: "", route: "" }; await loadAll(); }
@@ -225,7 +227,7 @@
         <div class="panel">
           <div class="panel-head"><div><h2>Patients</h2><p>Register patient records for use in medication verification workflows.</p></div></div>
           <div class="form-grid">
-            <label class="field"><span>MRN</span><input placeholder="Medical record number" bind:value={patientForm.mrn}/></label>
+            <label class="field"><span>MRN</span><input readonly value={nextMrn} class="mrn-preview"/></label>
             <label class="field"><span>Full Name</span><input placeholder="Patient full name" bind:value={patientForm.name}/></label>
             <label class="field"><span>Date of Birth</span><input type="date" bind:value={patientForm.dob}/></label>
             <label class="field"><span>Ward</span><input placeholder="Ward / Unit" bind:value={patientForm.ward}/></label>
@@ -246,7 +248,14 @@
                 <option value="transferred">Transferred</option>
               </select>
             </label>
-            <label class="field"><span>Attending Physician ID</span><input placeholder="e.g. d-001" bind:value={patientForm.attendingPhysicianId}/></label>
+            <label class="field"><span>Attending Physician</span>
+              <select bind:value={patientForm.attendingPhysicianId}>
+                <option value="">— None —</option>
+                {#each users.filter(u => u.role === "doctor") as doc}
+                  <option value={doc.id}>{doc.name} ({doc.id})</option>
+                {/each}
+              </select>
+            </label>
             <label class="field"><span>Admission Date</span><input type="date" bind:value={patientForm.admissionDate}/></label>
             <button class="btn btn-primary align-end" on:click={addPatient}>Add Patient</button>
           </div>
@@ -309,11 +318,27 @@
         <div class="panel">
           <div class="panel-head"><div><h2>Medication Orders</h2><p>Create and manage active medication orders.</p></div></div>
           <div class="form-grid order-grid">
-            <label class="field"><span>Patient ID</span><input placeholder="p-xxxxxx" bind:value={orderForm.patientId}/></label>
-            <label class="field"><span>Medication ID</span><input placeholder="m-xxxxxx" bind:value={orderForm.medicationId}/></label>
+            <label class="field">
+              <span>Patient ID</span>
+              <select bind:value={orderForm.patientId}>
+                <option value="">— Select Patient —</option>
+                {#each patients as p}
+                  <option value={p.id}>{p.name} ({p.id})</option>
+                {/each}
+              </select>
+            </label>
+            <label class="field">
+              <span>Medication ID</span>
+              <select bind:value={orderForm.medicationId}>
+                <option value="">— Select Medication —</option>
+                {#each medications as m}
+                  <option value={m.id}>{m.name} — {m.dose} ({m.id})</option>
+                {/each}
+              </select>
+            </label>
             <label class="field"><span>Dose</span><input placeholder="Prescribed dose" bind:value={orderForm.prescribedDose}/></label>
             <label class="field"><span>Route</span><input placeholder="Route" bind:value={orderForm.prescribedRoute}/></label>
-            <label class="field"><span>Scheduled Time</span><input placeholder="HH:mm" bind:value={orderForm.scheduledTime}/></label>
+            <label class="field"><span>Scheduled Time</span><input type="time" bind:value={orderForm.scheduledTime}/></label>
             <label class="field"><span>Rx ID</span><input placeholder="Prescription ID" bind:value={orderForm.prescriptionId}/></label>
             <button class="btn btn-primary align-end" on:click={addOrder}>Add Order</button>
           </div>
@@ -488,6 +513,7 @@
   }
   input:focus, select:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,0.1); }
   input::placeholder { color: #94a3b8; }
+  .mrn-preview { background: #f8fafc; color: #475569; font-family: "SF Mono","Fira Code",monospace; font-weight: 700; cursor: default; }
   .align-end { align-self: end; }
 
   /* ── Table ── */

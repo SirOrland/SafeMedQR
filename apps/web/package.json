@@ -12,10 +12,11 @@
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
-    "@types/qrcode": "^1.5.5",
     "@sveltejs/adapter-auto": "^3.2.2",
+    "@sveltejs/adapter-vercel": "^6.3.3",
     "@sveltejs/kit": "^2.5.18",
     "@sveltejs/vite-plugin-svelte": "^3.1.1",
+    "@types/qrcode": "^1.5.5",
     "svelte": "^4.2.18",
     "tslib": "^2.6.3",
     "typescript": "^5.5.3",

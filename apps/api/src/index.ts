@@ -136,12 +136,29 @@ app.get("/patients", ar(async (_req, res) => {
   res.json(rows.map(mapPatient));
 }));
 
+app.get("/patients/next-mrn", ar(async (_req, res) => {
+  const [rows] = await pool.query<mysql.RowDataPacket[]>(
+    "SELECT MAX(CAST(SUBSTRING(mrn, 4) AS UNSIGNED)) AS maxNum FROM patients WHERE mrn REGEXP '^MRN[0-9]+$'"
+  );
+  const next = (rows[0].maxNum ?? 1000) + 1;
+  res.json({ mrn: `MRN${next}` });
+}));
+
 app.post("/patients", ar(async (req, res) => {
-  const {
+  let {
     mrn, name, dob, ward, bed,
     allergyStatus, allergies, patientStatus,
     attendingPhysicianId, admissionDate,
-  } = req.body as Omit<Patient, "id">;
+  } = req.body as Omit<Patient, "id"> & { mrn?: string };
+
+  if (!mrn) {
+    const [rows] = await pool.query<mysql.RowDataPacket[]>(
+      "SELECT MAX(CAST(SUBSTRING(mrn, 4) AS UNSIGNED)) AS maxNum FROM patients WHERE mrn REGEXP '^MRN[0-9]+$'"
+    );
+    const next = (rows[0].maxNum ?? 1000) + 1;
+    mrn = `MRN${next}`;
+  }
+
   const id = makeId("p");
   await pool.execute(
     `INSERT INTO patients
