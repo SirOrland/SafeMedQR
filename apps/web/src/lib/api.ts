@@ -1,8 +1,7 @@
+import { env } from "$env/dynamic/public";
 import type { AlertThreshold, Medication, MedicationOrder, OrderStatus, Patient, Role, ScanLog, User } from "./types";
 
-const API_BASE =
-  (import.meta.env.PUBLIC_API_BASE as string | undefined)?.replace(/\/$/, "") ??
-  "http://localhost:4000";
+const API_BASE = (env.PUBLIC_API_BASE ?? "").replace(/\/$/, "") || "http://localhost:4000";
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(`${API_BASE}${path}`, init);
