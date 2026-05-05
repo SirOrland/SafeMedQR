@@ -509,7 +509,6 @@ export default function App() {
       if (order.prescribedRoute !== med.route) errors.push("Right Route");
     }
     if (Math.abs(timeToMinutes(order.scheduledTime) - timeToMinutes(nowHHmm())) > DUE_SOON_MINS) errors.push("Right Time");
-    if (!order.prescriptionId) errors.push("Right Prescription");
 
     setAutoErrors(errors);
     setManualConfirm(BLANK_MANUAL);

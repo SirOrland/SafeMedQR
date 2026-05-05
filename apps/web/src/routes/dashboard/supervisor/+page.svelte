@@ -6,6 +6,8 @@
   import type { AlertThreshold, Medication, MedicationOrder, Patient, ScanLog } from "$lib/types";
 
   let userName = "";
+  let sidebarOpen = false;
+  let sidebarCollapsed = false;
   let activeTab: "overview" | "compliance" | "alerts" = "overview";
 
   let patients: Patient[] = [];
@@ -27,7 +29,7 @@
     ]);
   }
 
-  function setTab(key: string) { activeTab = key as typeof activeTab; }
+  function setTab(key: string) { activeTab = key as typeof activeTab; sidebarOpen = false; }
 
   function patientName(id: string) { return patients.find(p => p.id === id)?.name ?? id; }
   function medName(id: string) { return medications.find(m => m.id === id)?.name ?? id; }
@@ -65,13 +67,17 @@
 <svelte:head><title>Chief Nurse Dashboard — SafeMedsQR</title></svelte:head>
 
 <div class="shell">
-  <aside class="sidebar">
+  <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
+  {#if sidebarOpen}<div class="sidebar-overlay" on:click={() => sidebarOpen = false}></div>{/if}
+  <aside class="sidebar" class:open={sidebarOpen} class:collapsed={sidebarCollapsed}>
     <div class="brand">
       <div class="brand-logo">✚</div>
-      <div>
+      <div class="brand-text">
         <p class="brand-app">SafeMedsQR</p>
         <p class="brand-role">Chief Nurse</p>
       </div>
+      <button class="sidebar-close" on:click={() => sidebarOpen = false} aria-label="Close menu">✕</button>
+      <button class="sidebar-collapse-btn" on:click={() => sidebarCollapsed = !sidebarCollapsed} aria-label="Collapse sidebar">{sidebarCollapsed ? '›' : '‹'}</button>
     </div>
     <nav>
       {#each Object.entries(TABS) as [key, label]}
@@ -93,10 +99,16 @@
   </aside>
 
   <div class="main-wrap">
+    {#if sidebarCollapsed}
+      <button class="sidebar-reopen" on:click={() => sidebarCollapsed = false} aria-label="Open sidebar">›</button>
+    {/if}
     <header class="page-header">
-      <div>
-        <p class="page-eyebrow">Chief Nurse Dashboard</p>
-        <h1 class="page-title">{TABS[activeTab]}</h1>
+      <div class="header-left">
+        <button class="menu-btn" on:click={() => sidebarOpen = !sidebarOpen} aria-label="Toggle menu">☰</button>
+        <div>
+          <p class="page-eyebrow">Chief Nurse Dashboard</p>
+          <h1 class="page-title">{TABS[activeTab]}</h1>
+        </div>
       </div>
       <div class="header-stats">
         <div class="hstat"><span class="hstat-val">{patients.length}</span><span class="hstat-label">Patients</span></div>
@@ -492,4 +504,57 @@
   .tn-row { display:flex; justify-content:space-between; align-items:center; }
   .tn-metric { font-size:13px; color:#334155; text-transform:capitalize; }
   .tn-val { font-size:13px; font-weight:700; color:#0f172a; font-family:"SF Mono","Fira Code",monospace; }
+
+  .brand-text { flex:1; min-width:0; }
+  .sidebar-collapse-btn { display:flex; align-items:center; justify-content:center; margin-left:auto; flex-shrink:0; width:28px; height:28px; border-radius:6px; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.12); color:#94a3b8; font-size:16px; cursor:pointer; transition:background 0.12s,color 0.12s; }
+  .sidebar.collapsed { width:0; min-width:0; overflow:hidden; }
+  .sidebar-reopen { position:fixed; left:0; top:50%; transform:translateY(-50%); background:#0f172a; border:1px solid rgba(255,255,255,0.12); border-left:none; border-radius:0 8px 8px 0; color:#93c5fd; width:18px; height:52px; display:flex; align-items:center; justify-content:center; cursor:pointer; z-index:50; font-size:15px; transition:width 0.15s; }
+  .sidebar-close { display:none; align-items:center; justify-content:center; margin-left:auto; flex-shrink:0; width:32px; height:32px; border-radius:8px; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.12); color:#94a3b8; font-size:14px; cursor:pointer; transition:background 0.12s,color 0.12s; }
+
+  /* ── Responsive ── */
+  .header-left { display:flex; align-items:center; gap:10px; }
+  .menu-btn { display:none; background:none; border:none; font-size:22px; color:#0f172a; cursor:pointer; padding:4px 8px; border-radius:6px; line-height:1; flex-shrink:0; }
+  .menu-btn:hover { background:#f1f5f9; }
+  .sidebar-overlay { position:fixed; inset:0; background:rgba(15,23,42,0.45); backdrop-filter:blur(2px); z-index:99; }
+
+  /* Tablet + Mobile (≤ 1024px) — sidebar becomes a slide-over */
+  @media (max-width:1024px) {
+    :global(html), :global(body) { overflow-x:hidden; }
+    .menu-btn { display:flex; align-items:center; justify-content:center; }
+    .sidebar { position:fixed; z-index:100; width:280px; max-width:85vw; height:100vh; height:100dvh; transform:translateX(-100%); transition:transform 0.25s ease; }
+    .sidebar.open { transform:translateX(0); }
+    .nav-item { min-height:44px; }
+    .page-header { padding:14px 20px; gap:12px; flex-wrap:wrap; }
+    .header-stats { gap:16px; flex-wrap:wrap; }
+    .hstat-val { font-size:18px; }
+    .content { padding:20px; }
+    .panel { padding:20px; }
+    .two-col { grid-template-columns:1fr; }
+    .stats-row { grid-template-columns:repeat(2,1fr); }
+    .alert-card { flex-direction:column; }
+    .ac-badge { align-self:flex-start; }
+    .table-wrap { -webkit-overflow-scrolling:touch; }
+    .sidebar.collapsed { width:280px; max-width:85vw; overflow:visible; }
+    .sidebar-close { display:flex; }
+    .sidebar-collapse-btn { display:none; }
+    .sidebar-reopen { display:none; }
+  }
+
+  /* Mobile only (≤ 768px) */
+  @media (max-width:768px) {
+    .page-header { padding:12px 16px; }
+    .content { padding:14px; }
+    .panel { padding:14px; }
+  }
+
+  /* Small phone (≤ 480px) */
+  @media (max-width:480px) {
+    .page-header { flex-direction:column; align-items:flex-start; gap:8px; padding:10px 14px; }
+    .header-stats { gap:14px; }
+    .page-title { font-size:18px; }
+    .hstat-val { font-size:16px; }
+    .content { padding:10px; }
+    .panel { padding:12px; }
+    .stat-val { font-size:22px; }
+  }
 </style>

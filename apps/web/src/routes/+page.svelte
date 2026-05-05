@@ -262,10 +262,24 @@
 
   .help-text { font-size: 12px; color: #94a3b8; text-align: center; }
 
+  /* Tablet */
+  @media (max-width: 1024px) {
+    .brand-panel { padding: 40px 32px; }
+    .form-panel  { padding: 40px 28px; }
+  }
+
+  /* Mobile */
   @media (max-width: 768px) {
     .root { grid-template-columns: 1fr; }
     .brand-panel { display: none; }
     .form-panel { padding: 32px 20px; background: #fff; }
     .form-card { box-shadow: none; border: none; padding: 0; }
+    input { font-size: 16px; }
+  }
+
+  /* Small phone */
+  @media (max-width: 480px) {
+    .form-panel { padding: 24px 16px; }
+    h2 { font-size: 22px; }
   }
 </style>
