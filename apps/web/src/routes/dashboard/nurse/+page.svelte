@@ -1,14 +1,14 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
   import { onMount } from "svelte";
-  import { createOrder, getMedications, getOrders, getPatients } from "$lib/api";
+  import { createMedication, createOrder, deleteMedication, deleteOrder, getMedications, getOrders, getPatients } from "$lib/api";
   import { clearSession, session } from "$lib/session";
   import type { Medication, MedicationOrder, Patient } from "$lib/types";
 
   let userName = "";
   let sidebarOpen = false;
   let sidebarCollapsed = false;
-  let activeTab: "create" | "orders" | "patients" = "create";
+  let activeTab: "create" | "orders" | "patients" | "medications" = "create";
 
   let patients: Patient[] = [];
   let medications: Medication[] = [];
@@ -27,6 +27,7 @@
   let orderPickerMinute = 0;
   let formError = "";
   let formSuccess = "";
+  let medForm = { name: "", dose: "", route: "" };
 
   function fmtDateLabel(d: string) {
     const today    = todayIso();
@@ -62,6 +63,8 @@
     }
   }
 
+  async function addMed() { await createMedication(medForm); medForm = { name: "", dose: "", route: "" }; await loadAll(); }
+
   function patientName(id: string) { return patients.find(p => p.id === id)?.name ?? id; }
   function medName(id: string)     { return medications.find(m => m.id === id)?.name ?? id; }
   function fmtDate(st: string) {
@@ -95,9 +98,10 @@
       <button class="sidebar-collapse-btn" on:click={() => sidebarCollapsed = !sidebarCollapsed} aria-label="Collapse sidebar">{sidebarCollapsed ? '›' : '‹'}</button>
     </div>
     <nav>
-      <button class="nav-item" class:active={activeTab==="create"}   on:click={() => { activeTab="create";   sidebarOpen=false; }}>New Order</button>
-      <button class="nav-item" class:active={activeTab==="orders"}   on:click={() => { activeTab="orders";   sidebarOpen=false; }}>Order Status</button>
-      <button class="nav-item" class:active={activeTab==="patients"} on:click={() => { activeTab="patients"; sidebarOpen=false; }}>Patients</button>
+      <button class="nav-item" class:active={activeTab==="create"}      on:click={() => { activeTab="create";      sidebarOpen=false; }}>New Order</button>
+      <button class="nav-item" class:active={activeTab==="orders"}      on:click={() => { activeTab="orders";      sidebarOpen=false; }}>Order Status</button>
+      <button class="nav-item" class:active={activeTab==="patients"}    on:click={() => { activeTab="patients";    sidebarOpen=false; }}>Patients</button>
+      <button class="nav-item" class:active={activeTab==="medications"} on:click={() => { activeTab="medications"; sidebarOpen=false; }}>Medications</button>
     </nav>
     <div class="sidebar-footer">
       <div class="user-row">
@@ -118,7 +122,7 @@
         <div>
           <p class="page-eyebrow">Nurse Dashboard</p>
           <h1 class="page-title">
-            {activeTab === "create" ? "New Order" : activeTab === "orders" ? "Order Status" : "Patients"}
+            {activeTab === "create" ? "New Order" : activeTab === "orders" ? "Order Status" : activeTab === "medications" ? "Medications" : "Patients"}
           </h1>
         </div>
       </div>
@@ -272,7 +276,7 @@
           <div class="panel-head"><h2>Order Status</h2><p>Track all medication orders and their current pharmacy status.</p></div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>Patient</th><th>Medication</th><th>Dose</th><th>Route</th><th>Date</th><th>Time</th><th>Rx ID</th><th>Status</th></tr></thead>
+              <thead><tr><th>Patient</th><th>Medication</th><th>Dose</th><th>Route</th><th>Date</th><th>Time</th><th>Rx ID</th><th>Status</th><th>Action</th></tr></thead>
               <tbody>
                 {#each orders as o}
                   <tr>
@@ -284,6 +288,35 @@
                     <td class="mono">{fmtTime(o.scheduledTime)}</td>
                     <td class="mono">{o.prescriptionId || "—"}</td>
                     <td><span class="order-status {o.status}">{o.status}</span></td>
+                    <td><button class="btn btn-sm btn-danger" on:click={() => deleteOrder(o.id).then(loadAll)}>Delete</button></td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+      <!-- ── MEDICATIONS ── -->
+      {:else if activeTab === "medications"}
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Medications</h2>
+            <p>Maintain medication master data used during scan verification.</p>
+          </div>
+          <div class="form-grid">
+            <label class="field"><span>Name</span><input placeholder="Medication name" bind:value={medForm.name}/></label>
+            <label class="field"><span>Dose</span><input placeholder="e.g. 500mg" bind:value={medForm.dose}/></label>
+            <label class="field"><span>Route</span><input placeholder="PO, IV, IM…" bind:value={medForm.route}/></label>
+            <button class="btn btn-primary align-end" on:click={addMed}>Add Medication</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>ID</th><th>Code</th><th>Name</th><th>Dose</th><th>Route</th><th>Action</th></tr></thead>
+              <tbody>
+                {#each medications as m}
+                  <tr>
+                    <td class="mono">{m.id}</td><td class="mono">{m.code}</td><td class="fw-600">{m.name}</td><td>{m.dose}</td><td>{m.route}</td>
+                    <td><button class="btn btn-sm btn-danger" on:click={() => deleteMedication(m.id).then(loadAll)}>Delete</button></td>
                   </tr>
                 {/each}
               </tbody>
@@ -395,7 +428,10 @@
   .btn:hover { filter:brightness(1.06); }
   .btn:active { transform:translateY(1px); }
   .btn-primary { background:#0284c7; color:#fff; box-shadow:0 2px 6px rgba(2,132,199,0.25); }
+  .btn-sm { padding:6px 10px; font-size:12px; }
+  .btn-danger { background:#fef2f2; color:#b91c1c; border:1px solid #fecaca; }
   .btn-block { width:100%; padding:13px; font-size:15px; }
+  .align-end { align-self:end; }
 
   /* ── Table ── */
   .table-wrap { overflow:auto; border:1px solid #e2e8f0; border-radius:12px; }

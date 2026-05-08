@@ -3,24 +3,22 @@
   import { onMount } from "svelte";
   import {
     changeUserPassword,
-    createMedication, createOrder, createPatient, createUser,
-    deleteMedication, deleteOrder, deletePatient,
-    getLogs, getMedications, getNextMrn, getOrders, getPatients,
+    createPatient, createUser,
+    deletePatient,
+    getLogs, getNextMrn, getPatients,
     getThresholds, getUsers, setUserActive, updateThreshold
   } from "$lib/api";
   import { clearSession, session } from "$lib/session";
-  import type { AlertThreshold, Medication, MedicationOrder, Patient, Role, ScanLog, User } from "$lib/types";
+  import type { AlertThreshold, Patient, Role, ScanLog, User } from "$lib/types";
   import QRCode from "qrcode";
 
   let userName = "";
   let sidebarOpen = false;
   let sidebarCollapsed = false;
-  let activeTab: "users" | "patients" | "medications" | "orders" | "logs" | "alerts" = "users";
+  let activeTab: "users" | "patients" | "logs" | "alerts" = "users";
 
   let users: User[] = [];
   let patients: Patient[] = [];
-  let medications: Medication[] = [];
-  let orders: MedicationOrder[] = [];
   let logs: ScanLog[] = [];
   let thresholds: AlertThreshold[] = [];
   let fromDate = "";
@@ -35,37 +33,6 @@
     patientStatus: "active" as "active" | "discharged" | "transferred",
     attendingPhysicianId: "", admissionDate: "",
   };
-  let medForm = { name: "", dose: "", route: "" };
-  const todayIso = () => new Date().toISOString().slice(0, 10);
-  let orderForm = { patientId: "", medicationId: "", prescribedDose: "", prescribedRoute: "", scheduledDate: todayIso(), scheduledTime: "08:00", prescriptionId: "", active: true };
-  let orderDatePickerOpen = false;
-  let orderTimePickerOpen = false;
-  let orderPickerHour = 8;
-  let orderPickerMinute = 0;
-
-  function fmtDateLabel(d: string) {
-    const today    = todayIso();
-    const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
-    if (d === today)    return "Today";
-    if (d === tomorrow) return "Tomorrow";
-    return new Date(d + "T00:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
-  }
-  function fmtScheduled(st: string) {
-    if (st.length > 5) {
-      const [d, t] = st.split("T");
-      return new Date(d + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" }) + " · " + t;
-    }
-    return st;
-  }
-  function fmtDate(st: string) {
-    if (st.length > 5) {
-      const d = st.split("T")[0];
-      return new Date(d + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-    }
-    return "—";
-  }
-  function fmtTime(st: string) { return st.length > 5 ? st.split("T")[1] : st; }
-
   let qrOpen = false; let qrTitle = ""; let qrUrl = ""; let qrSub = "";
   let pwOpen = false; let pwUserId = ""; let pwUserName = ""; let pwValue = ""; let pwError = ""; let pwLoading = false;
   let editThresholds: Record<string, number> = {};
@@ -78,8 +45,8 @@
   });
 
   async function loadAll() {
-    [users, patients, medications, orders, logs, thresholds] = await Promise.all([
-      getUsers(), getPatients(), getMedications(), getOrders(),
+    [users, patients, logs, thresholds] = await Promise.all([
+      getUsers(), getPatients(),
       getLogs(fromDate || undefined, toDate || undefined), getThresholds()
     ]);
     editThresholds = Object.fromEntries(thresholds.map(t => [t.id, t.thresholdValue]));
@@ -113,12 +80,6 @@
     patientForm = { name: "", dob: "", ward: "", bed: "", allergyStatus: "none", allergies: "", patientStatus: "active", attendingPhysicianId: "", admissionDate: "" };
     await loadAll();
   }
-  async function addMed() { await createMedication(medForm); medForm = { name: "", dose: "", route: "" }; await loadAll(); }
-  async function addOrder() {
-    await createOrder({ ...orderForm, scheduledTime: `${orderForm.scheduledDate}T${orderForm.scheduledTime}` });
-    orderForm = { patientId: "", medicationId: "", prescribedDose: "", prescribedRoute: "", scheduledDate: todayIso(), scheduledTime: "08:00", prescriptionId: "", active: true };
-    await loadAll();
-  }
   async function saveThreshold(t: AlertThreshold) { await updateThreshold(t.id, editThresholds[t.id]); await loadAll(); }
 
   function signOut() { clearSession(); goto("/"); }
@@ -128,14 +89,12 @@
   $: errorScans = logs.filter(l => l.errorTypes.length > 0).length;
   $: errorRate = totalScans > 0 ? Math.round((errorScans / totalScans) * 100) : 0;
 
-  const TAB_LABELS: Record<"users"|"patients"|"medications"|"orders"|"logs"|"alerts", string> = {
-    users: "User Accounts", patients: "Patients", medications: "Medications",
-    orders: "Medication Orders", logs: "Audit Logs", alerts: "Alert Config",
+  const TAB_LABELS: Record<"users"|"patients"|"logs"|"alerts", string> = {
+    users: "User Accounts", patients: "Patients", logs: "Audit Logs", alerts: "Alert Config",
   };
 </script>
 
 <svelte:head><title>Admin Dashboard — SafeMedsQR</title></svelte:head>
-<svelte:window on:click={() => { orderDatePickerOpen = false; orderTimePickerOpen = false; }} />
 
 <!-- Password modal -->
 {#if pwOpen}
@@ -324,154 +283,6 @@
                     <td><span class="patient-status {p.patientStatus}">{p.patientStatus}</span></td>
                     <td><button class="btn btn-sm btn-outline-blue" on:click={() => openQr(p.id, p.name, `MRN: ${p.mrn} · ${p.ward}`)}>Print QR</button></td>
                     <td><button class="btn btn-sm btn-danger" on:click={() => deletePatient(p.id).then(loadAll)}>Delete</button></td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-      <!-- ── MEDICATIONS ── -->
-      {:else if activeTab === "medications"}
-        <div class="panel">
-          <div class="panel-head"><div><h2>Medications</h2><p>Maintain medication master data used during scan verification.</p></div></div>
-          <div class="form-grid">
-            <label class="field"><span>Name</span><input placeholder="Medication name" bind:value={medForm.name}/></label>
-            <label class="field"><span>Dose</span><input placeholder="e.g. 500mg" bind:value={medForm.dose}/></label>
-            <label class="field"><span>Route</span><input placeholder="PO, IV, IM…" bind:value={medForm.route}/></label>
-            <button class="btn btn-primary align-end" on:click={addMed}>Add Medication</button>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead><tr><th>ID</th><th>Code</th><th>Name</th><th>Dose</th><th>Route</th><th>Action</th></tr></thead>
-              <tbody>
-                {#each medications as m}
-                  <tr>
-                    <td class="mono">{m.id}</td><td class="mono">{m.code}</td><td class="fw-600">{m.name}</td><td>{m.dose}</td><td>{m.route}</td>
-                    <td><button class="btn btn-sm btn-danger" on:click={() => deleteMedication(m.id).then(loadAll)}>Delete</button></td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-      <!-- ── ORDERS ── -->
-      {:else if activeTab === "orders"}
-        <div class="panel">
-          <div class="panel-head"><div><h2>Medication Orders</h2><p>Create and manage active medication orders.</p></div></div>
-          <div class="form-grid order-grid">
-            <label class="field">
-              <span>Patient ID</span>
-              <select bind:value={orderForm.patientId}>
-                <option value="">— Select Patient —</option>
-                {#each patients as p}
-                  <option value={p.id}>{p.name} ({p.id})</option>
-                {/each}
-              </select>
-            </label>
-            <label class="field">
-              <span>Medication ID</span>
-              <select bind:value={orderForm.medicationId} on:change={() => {
-                const med = medications.find(m => m.id === orderForm.medicationId);
-                if (med) { orderForm.prescribedDose = med.dose; orderForm.prescribedRoute = med.route; }
-              }}>
-                <option value="">— Select Medication —</option>
-                {#each medications as m}
-                  <option value={m.id}>{m.name} — {m.dose} ({m.id})</option>
-                {/each}
-              </select>
-            </label>
-            <label class="field"><span>Dose</span><input placeholder="Prescribed dose" bind:value={orderForm.prescribedDose}/></label>
-            <label class="field"><span>Route</span><input placeholder="Route" bind:value={orderForm.prescribedRoute}/></label>
-            <!-- Date picker -->
-            <div class="field dt-field">
-              <span>Date</span>
-              <div class="dt-wrap">
-                <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
-                <button class="dt-pick-btn" on:click|stopPropagation={() => { orderDatePickerOpen = !orderDatePickerOpen; orderTimePickerOpen = false; }}>
-                  📅 {fmtDateLabel(orderForm.scheduledDate)}
-                </button>
-                {#if orderDatePickerOpen}
-                  <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
-                  <div class="dt-panel" on:click|stopPropagation>
-                    <div class="dt-quick-row">
-                      {#each [
-                        { label: "Today",    val: todayIso() },
-                        { label: "Tomorrow", val: new Date(Date.now() + 86400000).toISOString().slice(0, 10) },
-                        { label: "+2 Days",  val: new Date(Date.now() + 172800000).toISOString().slice(0, 10) },
-                      ] as q}
-                        <button class="dt-quick-btn" class:dt-quick-sel={orderForm.scheduledDate === q.val}
-                          on:click={() => { orderForm.scheduledDate = q.val; }}>
-                          {q.label}
-                        </button>
-                      {/each}
-                    </div>
-                    <div class="dt-nav-row">
-                      <button class="dt-nav-btn" on:click={() => { const d = new Date(orderForm.scheduledDate + "T00:00:00"); d.setDate(d.getDate() - 1); orderForm.scheduledDate = d.toISOString().slice(0, 10); }}>‹</button>
-                      <div class="dt-nav-center">
-                        <span class="dt-nav-date">{new Date(orderForm.scheduledDate + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}</span>
-                        <span class="dt-nav-year">{new Date(orderForm.scheduledDate + "T00:00:00").getFullYear()}</span>
-                      </div>
-                      <button class="dt-nav-btn" on:click={() => { const d = new Date(orderForm.scheduledDate + "T00:00:00"); d.setDate(d.getDate() + 1); orderForm.scheduledDate = d.toISOString().slice(0, 10); }}>›</button>
-                    </div>
-                  </div>
-                {/if}
-              </div>
-            </div>
-
-            <!-- Time picker -->
-            <div class="field dt-field">
-              <span>Time</span>
-              <div class="dt-wrap">
-                <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
-                <button class="dt-pick-btn" on:click|stopPropagation={() => {
-                  [orderPickerHour, orderPickerMinute] = orderForm.scheduledTime.split(":").map(Number);
-                  orderTimePickerOpen = !orderTimePickerOpen;
-                  orderDatePickerOpen = false;
-                }}>
-                  🕐 {orderForm.scheduledTime}
-                </button>
-                {#if orderTimePickerOpen}
-                  <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
-                  <div class="dt-panel tp-panel" on:click|stopPropagation>
-                    <div class="tp-body">
-                      <div class="tp-col">
-                        <span class="tp-col-label">Hour</span>
-                        <button class="tp-arrow" on:click={() => orderPickerHour = (orderPickerHour + 1) % 24}>▲</button>
-                        <span class="tp-display">{String(orderPickerHour).padStart(2, "0")}</span>
-                        <button class="tp-arrow" on:click={() => orderPickerHour = (orderPickerHour + 23) % 24}>▼</button>
-                      </div>
-                      <span class="tp-sep">:</span>
-                      <div class="tp-col">
-                        <span class="tp-col-label">Min</span>
-                        <button class="tp-arrow" on:click={() => orderPickerMinute = (orderPickerMinute + 5) % 60}>▲</button>
-                        <span class="tp-display">{String(orderPickerMinute).padStart(2, "0")}</span>
-                        <button class="tp-arrow" on:click={() => orderPickerMinute = (orderPickerMinute + 55) % 60}>▼</button>
-                      </div>
-                    </div>
-                    <button class="tp-confirm-btn" on:click={() => {
-                      orderForm.scheduledTime = `${String(orderPickerHour).padStart(2, "0")}:${String(orderPickerMinute).padStart(2, "0")}`;
-                      orderTimePickerOpen = false;
-                    }}>Confirm Time</button>
-                  </div>
-                {/if}
-              </div>
-            </div>
-            <label class="field"><span>Rx ID</span><input placeholder="Prescription ID" bind:value={orderForm.prescriptionId}/></label>
-            <button class="btn btn-primary align-end" on:click={addOrder}>Add Order</button>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead><tr><th>ID</th><th>Patient</th><th>Medication</th><th>Dose</th><th>Route</th><th>Date</th><th>Time</th><th>Status</th><th>Action</th></tr></thead>
-              <tbody>
-                {#each orders as o}
-                  <tr>
-                    <td class="mono">{o.id}</td><td>{o.patientId}</td><td>{o.medicationId}</td>
-                    <td>{o.prescribedDose}</td><td>{o.prescribedRoute}</td>
-                    <td>{fmtDate(o.scheduledTime)}</td><td class="mono">{fmtTime(o.scheduledTime)}</td>
-                    <td><span class="order-status {o.status}">{o.status}</span></td>
-                    <td><button class="btn btn-sm btn-danger" on:click={() => deleteOrder(o.id).then(loadAll)}>Delete</button></td>
                   </tr>
                 {/each}
               </tbody>
